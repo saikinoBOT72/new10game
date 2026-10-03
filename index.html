@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>スピンギア</title>
+  <meta name="description" content="ブレード・ラチェット・ビットを組み替えて戦う、物理演算のコマバトル" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
+</head>
+<body class="custom">
+  <canvas id="view"></canvas>
+
+  <!-- カスタマイズ画面 -->
+  <main id="custom">
+    <h1 class="logo">SPIN<span>GEAR</span></h1>
+    <p class="lead">ブレード × ラチェット × ビット を組み替えて、物理演算で戦わせよう</p>
+
+    <section class="card" data-side="0">
+      <div class="card-head"><h2 data-name>あなた</h2><button class="dice" data-random title="おまかせ">🎲</button></div>
+      <div class="part-row"><span class="part-label">ブレード</span><div class="chips" data-cat="blade"></div></div>
+      <div class="part-row"><span class="part-label">ラチェット</span><div class="chips" data-cat="ratchet"></div></div>
+      <div class="part-row"><span class="part-label">ビット</span><div class="chips" data-cat="bit"></div></div>
+      <div class="combo" data-combo></div>
+      <div class="stats" data-stats></div>
+      <div class="desc" data-desc></div>
+    </section>
+
+    <section class="card" data-side="1">
+      <div class="card-head"><h2 data-name>COM</h2><button class="dice" data-random title="おまかせ">🎲</button></div>
+      <div class="part-row"><span class="part-label">ブレード</span><div class="chips" data-cat="blade"></div></div>
+      <div class="part-row"><span class="part-label">ラチェット</span><div class="chips" data-cat="ratchet"></div></div>
+      <div class="part-row"><span class="part-label">ビット</span><div class="chips" data-cat="bit"></div></div>
+      <div class="combo" data-combo></div>
+      <div class="stats" data-stats></div>
+      <div class="desc" data-desc></div>
+      <div class="diff" id="diff">
+        <span class="part-label">COMの強さ</span>
+        <button data-diff="0">弱</button><button data-diff="1">普</button><button data-diff="2">強</button>
+      </div>
+    </section>
+
+    <div class="matchup" id="matchup"></div>
+
+    <div class="modes">
+      <button class="mode green" data-mode="watch">観戦<small>COM vs COM</small></button>
+      <button class="mode orange" data-mode="pvp">2人対戦<small>交代でシュート</small></button>
+      <button class="mode blue" data-mode="com">VS COM<small>先に4点</small></button>
+    </div>
+
+    <details class="rules">
+      <summary>パーツの役割とルール</summary>
+      <h3>3つのパーツの役割</h3>
+      <ul>
+        <li><b>ブレード（上層）</b> 重さ・回転力（慣性）・相手との当たり方を決める。重いブレードは回転力が上がるが、中層を叩かれると慣性でロックが外れやすくなる（自分から当てる攻撃なら弱点にならない）。</li>
+        <li><b>ラチェット（中層）</b> 高さを決める。高さが違うと、低い方の刃が高い方の中層に当たる。<b>バーストは中層に衝撃を受けたときだけ起こり</b>、ブレードどうしの当たりや壁への衝突では外れない。突起の多い丸い外周ほど衝撃を受け流す。</li>
+        <li><b>ビット（下層）</b> 軸先の形で動きが決まる（フラット＝攻撃、テーパー＝バランス、ボール＝持久、ニードル＝防御）。<b>シャフトの太さでバースト耐性が変わり</b>、攻撃軸は太く強い、持久・防御軸は細く弱い。ギアでレールに噛み、クラッチが硬いほど急加速する。</li>
+      </ul>
+      <h3>スタジアム</h3>
+      <p>外周のギアレール（エクストリームライン）に噛むと回転を速度に変えて加速し、奥のレールの切れ目（射出ポイント）でスタジアムを縦断するように打ち出される。射出ポイントの対面（手前）がエクストリームゾーン、その左右がオーバーゾーン。エクストリームゾーンは入口が高く強く弾かないと入らないが、オーバーゾーンはフェンスから滑らかに続いているので壁沿いに滑り込むこともある。左右対称なので、ラウンドごとに立ち位置を入れ替える。</p>
+      <h3>勝ち方（先に4点）</h3>
+      <ul>
+        <li><b>スピン 1点</b> 相手より長く回る</li>
+        <li><b>オーバー 2点</b> オーバーゾーンへ落とす</li>
+        <li><b>バースト 2点</b> 中層を叩いてロックを外す</li>
+        <li><b>エクストリーム 3点</b> エクストリームゾーンへ落とす</li>
+      </ul>
+      <p class="credit">パーツの役割分担は、競技玩具研究所「ベイブレードＸ初弾構造レポート」の解説を参考にしています。</p>
+    </details>
+  </main>
+
+  <!-- バトル画面 -->
+  <div id="hud" hidden>
+    <div class="score">
+      <div class="side s0">
+        <div class="who"><b data-hud-name="0">あなた</b><span class="pts" data-pts="0"></span></div>
+        <div class="rpm"><span data-rpm="0">0</span> rpm</div>
+        <div class="bar"><i data-bar="0"></i></div>
+        <div class="lock"><span>ロック負荷</span><div class="lockbar"><i data-lock="0"></i></div></div>
+        <div class="phys" data-phys="0"></div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="side s1">
+        <div class="who"><span class="pts" data-pts="1"></span><b data-hud-name="1">COM</b></div>
+        <div class="rpm"><span data-rpm="1">0</span> rpm</div>
+        <div class="bar"><i data-bar="1"></i></div>
+        <div class="lock"><span>ロック負荷</span><div class="lockbar"><i data-lock="1"></i></div></div>
+        <div class="phys" data-phys="1"></div>
+      </div>
+    </div>
+    <div id="aimHint" hidden>
+      <p data-aim-text>ドラッグで方向と強さを決めて、離すとシュート！</p>
+      <button id="bank" class="pill">バンクシュート: OFF</button>
+    </div>
+    <div class="tools">
+      <button id="btnCam" class="pill">視点</button>
+      <button id="btnSpeed" class="pill">×1</button>
+      <button id="btnTrail" class="pill">軌跡 ON</button>
+      <button id="btnSound" class="pill">音 ON</button>
+      <button id="btnQuit" class="pill">やめる</button>
+    </div>
+    <div id="banner" hidden>
+      <div class="finish" data-finish></div>
+      <div class="gain" data-gain></div>
+      <div class="banner-btns">
+        <button id="btnNext" class="mode blue">次のラウンド</button>
+        <button id="btnBack" class="mode gray" hidden>パーツを変える</button>
+      </div>
+    </div>
+    <div id="flash" hidden></div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

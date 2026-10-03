@@ -1,0 +1,1 @@
+{"type":"module","private":true,"name":"new10game","scripts":{"sim":"node tools/sim.mjs"}}
