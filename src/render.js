@@ -40,6 +40,11 @@ export class Renderer {
     this.arrow = makeArrow();
     this.arrow.visible = false;
     this.root.add(this.arrow);
+    // 引っ張りのゴム
+    this.band = new THREE.Mesh(new THREE.CylinderGeometry(0.0012, 0.0012, 1, 8), new THREE.MeshBasicMaterial({ color: 0x3466d8 }));
+    this.band.visible = false;
+    this.root.add(this.band);
+    this.zone = null;
     this.setCamera('battle');
   }
 
@@ -231,9 +236,10 @@ export class Renderer {
     this.trails[idx].reset();
   }
 
-  showArrow(x, z, angle, power, color) {
+  showArrow(x, z, angle, power, color, opacity = 0.6) {
     this.arrow.visible = true;
     this.arrow.material.color.set(color);
+    this.arrow.material.opacity = opacity;
     const y = floorY(Math.hypot(x, z)) + 0.04;
     this.arrow.position.set(x, y, z);
     this.arrow.rotation.set(0, -angle, 0);
@@ -243,6 +249,40 @@ export class Renderer {
 
   hideArrow() {
     this.arrow.visible = false;
+  }
+
+  // コマから引っ張った方向へ伸びるゴム
+  showBand(x, z, angle, len, color) {
+    const y = floorY(Math.hypot(x, z)) + 0.04;
+    const ex = x + Math.cos(angle) * len;
+    const ez = z + Math.sin(angle) * len;
+    const a = new THREE.Vector3(x, y, z);
+    const b = new THREE.Vector3(ex, floorY(Math.hypot(ex, ez)) + 0.04, ez);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    this.band.position.copy(mid);
+    this.band.scale.set(1, a.distanceTo(b), 1);
+    this.band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+    this.band.material.color.set(color);
+    this.band.visible = true;
+  }
+
+  hideBand() {
+    this.band.visible = false;
+  }
+
+  // スタート位置を置ける範囲（扇形）
+  showZone(a0, a1, r0, r1, color) {
+    this.hideZone();
+    this.zone = new THREE.Mesh(floorStrip(r0, r1, a0, a1, 48, 0.0015),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide }));
+    this.root.add(this.zone);
+  }
+
+  hideZone() {
+    if (!this.zone) return;
+    this.root.remove(this.zone);
+    this.zone.geometry.dispose();
+    this.zone = null;
   }
 
   // 画面座標 → 床（y=0 付近）の物理座標

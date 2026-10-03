@@ -42,7 +42,13 @@ export const STADIUM = {
 const C_AIR = 2.0e-9; // 空気抵抗トルク係数 (N·m·s²)
 const K_SMASH = 0.07; // 刃の凹凸が表面速度を押し出しに変える割合
 const K_WSMASH = 0.012;
-const L_UNLOCK = 7.0e-4; // ロックが外れる目安の逆向き角力積 (N·m·s)
+const L_UNLOCK = 5.0e-4; // 負荷 1 にあたる逆向き角力積 (N·m·s)
+// ロック負荷: 中層への衝撃で溜まり、満タン（4段目の終わり）でバースト。
+// 時間がたつと少しずつ戻るが、すでに越えた段の区切りより下には戻らない。
+export const LOCK_STEPS = 4;
+const LOCK_GAIN = 0.4; // 衝撃の負荷のうちゲージに溜まる割合
+const LOCK_GRAZE = 0.15; // これ未満のかすり当たりは溜まらない
+const LOCK_HEAL = 0.06; // 1秒あたりの自然回復
 const BLADE_T = 0.006; // ブレードの厚み
 const Q0 = 0.04; // フラット面が縁接地になる傾き
 const TILT_HIT = 0.45;
@@ -178,7 +184,7 @@ function newBey(spec, idx) {
     x: 0, z: 0, vx: 0, vz: 0,
     w: 0, ax: 0, az: 0,
     relTilt: 0,
-    lockLoad: 0, // 直近でロックにかかった負荷（1で外れる目安）
+    lockLoad: 0, // ロック負荷 0..1（1でバースト）
     kickCool: 0,
     state: 'ready', // ready | spin | down | out | burst
     finish: null,
@@ -233,7 +239,9 @@ function stepBey(world, b, dt) {
   b.onRail = false;
   b.wallCool -= dt;
   b.kickCool -= dt;
-  b.lockLoad *= Math.exp(-1.5 * dt);
+  // 自然回復は今いる段の区切りまで
+  const lockFloor = Math.floor(b.lockLoad * LOCK_STEPS + 1e-9) / LOCK_STEPS;
+  b.lockLoad = Math.max(lockFloor, b.lockLoad - LOCK_HEAL * dt);
   if (b.state === 'ready') return;
 
   if (b.state === 'out') {
@@ -430,13 +438,14 @@ function lockStress(b, dL, exposure, striker) {
   return (Math.abs(dL) * exposure * striker * spinFactor) / (L_UNLOCK * b.spec.lock);
 }
 
-// ワンクリックのロック。負荷が大きいほど確率的に外れる。戻り値: バーストしたか
-function tryUnlock(world, b, stress) {
-  if (stress <= 0) return false;
-  b.lockLoad = Math.max(b.lockLoad, stress);
-  const p = Math.max(0, Math.min(1, (stress - 0.85) / 0.6));
-  if (p <= 0 || world.rng() > p) {
-    if (stress > 0.6) emit(world, { type: 'strain', idx: b.idx, stress });
+// 負荷をロックのゲージに溜める。満タンでバースト。戻り値: バーストしたか
+function tryUnlock(world, b, stress, allowBurst = true) {
+  if (b.state !== 'spin' || stress < LOCK_GRAZE) return false;
+  const before = Math.floor(b.lockLoad * LOCK_STEPS + 1e-9);
+  b.lockLoad = Math.min(allowBurst ? 1 : 0.999, b.lockLoad + stress * LOCK_GAIN);
+  const after = Math.floor(b.lockLoad * LOCK_STEPS + 1e-9);
+  if (b.lockLoad < 1) {
+    emit(world, { type: after > before ? 'lockstep' : 'strain', idx: b.idx, stress, step: after });
     return false;
   }
   b.state = 'burst';
@@ -535,10 +544,10 @@ function collidePair(world, b1, b2, dt) {
   const st2 = lockStress(b2, dL2, ex2, 0.4 + 0.8 * s1.blade.smash);
   // 同時バーストは起こさない（負荷の大きい方から判定）
   if (st1 >= st2) {
-    if (!tryUnlock(world, b1, st1)) tryUnlock(world, b2, st2);
-    else b2.lockLoad = Math.max(b2.lockLoad, st2);
-  } else if (!tryUnlock(world, b2, st2)) tryUnlock(world, b1, st1);
-  else b1.lockLoad = Math.max(b1.lockLoad, st1);
+    tryUnlock(world, b2, st2, !tryUnlock(world, b1, st1));
+  } else {
+    tryUnlock(world, b1, st1, !tryUnlock(world, b2, st2));
+  }
 
   const strength = JnT + Math.abs(Jt);
   if (strength > 0.004) {

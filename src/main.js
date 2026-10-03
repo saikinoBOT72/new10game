@@ -5,9 +5,34 @@ import { Sound } from './audio.js';
 
 const DT = 1 / 600;
 const TARGET = 4;
-// 左右から向かい合って打つ。スタジアムは左右対称だが回転対称ではないので、ラウンドごとに入れ替える
-const SIDES = [{ x: -0.11, z: 0 }, { x: 0.11, z: 0 }];
-const startPos = (i) => SIDES[state.swap ? 1 - i : i];
+// 左右から向かい合って打つ。スタジアムは左右対称だが回転対称ではないので、ラウンドごとに入れ替える。
+// 自分の側の扇形の中なら、タップで好きな位置から打てる
+const ZONE = { r0: 0.04, r1: 0.15, margin: 0.2 };
+const sideSign = (i) => ((i === 0) !== state.swap ? -1 : 1); // -1: 左, +1: 右
+const startPos = (i) => state.pos[i];
+
+// 自分の側の扇形（中心角）
+function sideSector(i) {
+  const c = sideSign(i) < 0 ? Math.PI : 0;
+  const half = Math.PI / 2 - ZONE.margin;
+  return { c, half };
+}
+
+function clampToSide(i, x, z) {
+  const { c, half } = sideSector(i);
+  let a = Math.atan2(z, x) - c;
+  a = Math.atan2(Math.sin(a), Math.cos(a));
+  a = Math.max(-half, Math.min(half, a)) + c;
+  const r = Math.max(ZONE.r0, Math.min(ZONE.r1, Math.hypot(x, z)));
+  return { x: Math.cos(a) * r, z: Math.sin(a) * r };
+}
+
+function randomPos(i) {
+  const { c, half } = sideSector(i);
+  const a = c + (Math.random() * 2 - 1) * half * 0.8;
+  const r = 0.07 + Math.random() * 0.07;
+  return { x: Math.cos(a) * r, z: Math.sin(a) * r };
+}
 const CATS = { blade: BLADES, ratchet: RATCHETS, bit: BITS };
 const FINISH_NAME = { spin: 'SPIN FINISH', over: 'OVER FINISH', burst: 'BURST FINISH', xtreme: 'XTREME FINISH' };
 
@@ -41,6 +66,7 @@ const state = {
   acc: 0,
   autoT: 0,
   swap: false,
+  pos: [{ x: -0.11, z: 0 }, { x: 0.11, z: 0 }],
 };
 
 function load() {
@@ -223,6 +249,8 @@ function startRound() {
   R.clearDebris();
   state.specs = [specOf(0), specOf(1)];
   state.world = createBattle(state.specs, { seed: (Math.random() * 1e9) | 0 });
+  const h = humans();
+  state.pos = [0, 1].map((i) => (h[i] ? { x: sideSign(i) * 0.11, z: 0 } : randomPos(i)));
   state.specs.forEach((s, i) => {
     R.setBey(i, s);
     const p = startPos(i);
@@ -232,7 +260,6 @@ function startRound() {
   state.bannerShown = false;
   state.acc = 0;
   state.aims = [null, null];
-  const h = humans();
   h.forEach((isHuman, i) => {
     if (!isHuman) state.aims[i] = comAim(i);
   });
@@ -251,15 +278,24 @@ function nextAimer() {
   if (state.aimIdx < 0) {
     hint.hidden = true;
     R.hideArrow();
+    R.hideZone();
     if (h.some(Boolean)) launchAll();
     return;
   }
   hint.hidden = false;
   const who = state.mode === 'pvp' ? `P${state.aimIdx + 1}: ` : '';
-  const side = startPos(state.aimIdx).x < 0 ? '左' : '右';
-  $('[data-aim-text]').textContent = `${who}${side}側から。ドラッグで方向と強さを決めて、離すとシュート！`;
+  const side = sideSign(state.aimIdx) < 0 ? '左' : '右';
+  $('[data-aim-text]').textContent = `${who}${side}側をタップで位置を決めて、引っ張って離すとシュート！`;
+  const { c, half } = sideSector(state.aimIdx);
+  R.showZone(c - half, c + half, ZONE.r0, ZONE.r1, TEAM_COLORS[state.aimIdx]);
+  showDefaultAim();
+}
+
+// まだ引っ張っていないときは、中央へ向けた薄い矢印を出しておく
+function showDefaultAim() {
   const s = startPos(state.aimIdx);
-  R.showArrow(s.x, s.z, Math.atan2(-s.z, -s.x), 0.5, TEAM_COLORS[state.aimIdx]);
+  R.hideBand();
+  R.showArrow(s.x, s.z, Math.atan2(-s.z, -s.x), 0.35, TEAM_COLORS[state.aimIdx], 0.3);
 }
 
 function comAim(i) {
@@ -283,6 +319,8 @@ function launchAll() {
   R.controls.enabled = true;
   $('#aimHint').hidden = true;
   R.hideArrow();
+  R.hideBand();
+  R.hideZone();
   sound.event({ type: 'launch' });
   flash('GO SHOOT!');
 }
@@ -339,11 +377,13 @@ function updateHud() {
     const rpm = b.state === 'spin' ? (Math.abs(b.w) * 60) / (2 * Math.PI) : 0;
     $(`[data-rpm="${i}"]`).textContent = Math.round(rpm).toLocaleString();
     $(`[data-bar="${i}"]`).style.width = `${Math.min(100, (rpm / 9000) * 100)}%`;
-    // ロックへの負荷（中層を叩かれると上がる。100%付近で外れる）
-    const load = b.state === 'burst' ? 1 : Math.min(1, b.lockLoad / 1.2);
-    const lk = $(`[data-lock="${i}"]`);
-    lk.style.width = `${(load * 100).toFixed(0)}%`;
-    lk.classList.toggle('hot', load > 0.6);
+    // ロック負荷: 4段。越えた段（赤）は自然回復では戻らない
+    const load = b.state === 'burst' ? 1 : b.lockLoad;
+    $$(`[data-lock="${i}"] i`).forEach((cell, k) => {
+      const f = Math.max(0, Math.min(1, load * 4 - k));
+      cell.firstChild.style.width = `${(f * 100).toFixed(0)}%`;
+      cell.classList.toggle('full', f >= 1);
+    });
     const v = Math.hypot(b.vx, b.vz);
     const tilt = (Math.hypot(b.ax, b.az) * 180) / Math.PI;
     const label = { spin: b.onRail ? 'レール' : '', down: '停止', out: '場外', burst: 'バースト', ready: '' }[b.state];
@@ -353,38 +393,68 @@ function updateHud() {
 
 // ---------- 入力（照準） ----------
 
+// タップ: 自分の側の中でスタート位置を動かす
+// ドラッグ: モンスト式に引っ張る。引いた向きの反対へ、引いた長さに応じた強さで飛ぶ
+const TAP_PX = 10;
+
 canvas.addEventListener('pointerdown', (e) => {
   sound.unlock();
   if (state.screen !== 'aim' || state.aimIdx < 0) return;
   const p = R.pickFloor(e.clientX, e.clientY);
   if (!p) return;
-  state.drag = { sx: e.clientX, sy: e.clientY, p0: p, angle: null, power: 0 };
+  state.drag = { sx: e.clientX, sy: e.clientY, p0: p, pulling: false, angle: null, power: 0 };
   canvas.setPointerCapture(e.pointerId);
 });
 
 canvas.addEventListener('pointermove', (e) => {
   const d = state.drag;
   if (!d || state.screen !== 'aim') return;
+  const px = Math.hypot(e.clientX - d.sx, e.clientY - d.sy);
+  if (!d.pulling && px < TAP_PX) return;
+  d.pulling = true;
   const p = R.pickFloor(e.clientX, e.clientY);
   if (!p) return;
   const dx = p.x - d.p0.x;
   const dz = p.z - d.p0.z;
-  const px = Math.hypot(e.clientX - d.sx, e.clientY - d.sy);
   const full = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.38;
-  d.power = Math.min(1, px / full);
-  if (Math.hypot(dx, dz) > 0.002) d.angle = Math.atan2(dz, dx);
+  d.power = Math.min(1, Math.max(0, px - TAP_PX) / full);
+  if (Math.hypot(dx, dz) > 0.002) d.angle = Math.atan2(-dz, -dx); // 引いた向きの反対
   const s = startPos(state.aimIdx);
-  if (d.angle !== null) R.showArrow(s.x, s.z, d.angle, d.power, TEAM_COLORS[state.aimIdx]);
+  if (d.angle !== null) {
+    const col = TEAM_COLORS[state.aimIdx];
+    R.showArrow(s.x, s.z, d.angle, d.power, col, d.power < 0.08 ? 0.3 : 0.65);
+    R.showBand(s.x, s.z, d.angle + Math.PI, 0.015 + d.power * 0.05, col);
+  }
 });
 
-canvas.addEventListener('pointerup', () => {
+function endDrag(e, cancelled) {
   const d = state.drag;
   state.drag = null;
   if (!d || state.screen !== 'aim' || state.aimIdx < 0) return;
-  if (d.angle === null || d.power < 0.08) return;
+  if (cancelled) {
+    showDefaultAim();
+    return;
+  }
+  if (!d.pulling) {
+    // タップ: スタート位置を決める
+    const p = R.pickFloor(e.clientX, e.clientY);
+    if (!p) return;
+    const q = clampToSide(state.aimIdx, p.x, p.z);
+    state.pos[state.aimIdx] = q;
+    R.placeReady(state.aimIdx, q.x, q.z);
+    sound.event({ type: 'place' });
+    showDefaultAim();
+    return;
+  }
+  if (d.angle === null || d.power < 0.08) {
+    showDefaultAim(); // 引きが弱すぎるときはやり直し
+    return;
+  }
   state.aims[state.aimIdx] = { angle: d.angle, power: d.power, bank: state.bank ? 1 : 0 };
   nextAimer();
-});
+}
+canvas.addEventListener('pointerup', (e) => endDrag(e, false));
+canvas.addEventListener('pointercancel', (e) => endDrag(e, true));
 
 $('#bank').onclick = () => {
   state.bank = !state.bank;

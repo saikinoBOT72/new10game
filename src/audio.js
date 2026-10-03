@@ -125,6 +125,13 @@ export class Sound {
       case 'wall':
         this.burstNoise(0.05, 0.08 + 0.2 * Math.min(1, ev.strength / 0.05), 900, 1);
         break;
+      case 'place':
+        this.ping(880, 0.06, 0.08, 'triangle');
+        break;
+      case 'lockstep':
+        this.ping(2400, 0.08, 0.16, 'square');
+        this.ping(1600, 0.12, 0.1, 'square');
+        break;
       case 'strain':
         this.ping(3000 + ev.stress * 800, 0.05, 0.08, 'square');
         break;

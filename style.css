@@ -189,10 +189,13 @@ body:not(.custom) #custom { display: none; }
 .s1 .bar i { background: var(--red); margin-left: auto; }
 .lock { display: flex; gap: 6px; margin-top: 5px; font-size: 10px; color: var(--sub); align-items: center; }
 .s1 .lock { flex-direction: row-reverse; }
-.lockbar { flex: 1; height: 5px; background: #e2e5eb; border-radius: 3px; overflow: hidden; }
-.lockbar i { display: block; height: 100%; width: 0; background: var(--gold); transition: width 0.15s; }
-.s1 .lockbar i { margin-left: auto; }
-.lockbar i.hot { background: #e0413b; }
+.lockbar { flex: 1; display: flex; gap: 3px; }
+.s1 .lockbar { flex-direction: row-reverse; }
+.lockbar i { flex: 1; height: 7px; background: #e2e5eb; border-radius: 2px; overflow: hidden; display: flex; }
+.s1 .lockbar i { justify-content: flex-end; }
+.lockbar b { display: block; height: 100%; width: 0; background: var(--gold); }
+/* 越えた段は戻らない（確定した負荷） */
+.lockbar i.full b { background: #e0413b; }
 .phys { font-size: 10px; color: var(--sub); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .vs { font-weight: 900; font-style: italic; color: #9aa0ab; padding-top: 18px; }
 
