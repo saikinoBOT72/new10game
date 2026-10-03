@@ -69,7 +69,7 @@ export class Sound {
     world?.beys.forEach((b, i) => {
       const h = this.hums[i];
       if (!h) return;
-      const w = b.state === 'spin' ? Math.abs(b.w) : 0;
+      const w = b.state === 'spin' ? Math.abs(b.spin) : 0;
       h.osc.frequency.setTargetAtTime(55 + w * 0.32 + i * 7, t, 0.05);
       h.g.gain.setTargetAtTime(w > 0 ? 0.018 + 0.03 * Math.min(1, w / 900) : 0, t, 0.08);
       if (b.onRail) rail = true;

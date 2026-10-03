@@ -83,6 +83,8 @@ body:not(.custom) #custom { display: none; }
 .part-label b { color: var(--ink); font-size: 13px; margin-right: 4px; }
 .part-label em { font-style: normal; font-size: 10px; background: #eceef2; border-radius: 4px; padding: 1px 5px; margin-right: 6px; }
 .height { font-weight: 700; color: var(--ink); }
+.stats .pv { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; min-width: 0; }
+.stats .pv b { font-size: 11px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .desc .note { display: block; margin-bottom: 4px; color: var(--ink); }
 .desc .parts-desc { display: block; margin-top: 8px; color: var(--sub); }
 .matchup { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 13px; line-height: 1.55; }

@@ -1,12 +1,16 @@
 // Three.js による描画。物理は src/physics.js 側（ここでは読むだけ）。
 import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
-import { STADIUM, floorY, floorSlope } from './physics.js';
+import { STADIUM, bowlY as floorY, railRadius } from './physics.js';
+import { bladeRadius, ratchetRadius, BIT_R, GEAR_R } from './shapes.js';
 
 const S = 10; // 物理の 1m を描画の 10 単位にする
 const VIS_SPIN = 0.05; // 見た目の回転速度（実際の回転をそのまま描くとストロボで止まって見える）
+const TIME_SCALE_VIS = 1;
 
 export const TEAM_COLORS = [0x3466d8, 0xd2513b];
+const UP = new THREE.Vector3(0, 1, 0);
+const tmpV = new THREE.Vector3();
 
 export class Renderer {
   constructor(canvas) {
@@ -118,42 +122,46 @@ export class Renderer {
       slot.rotation.y = -p.center;
       slot.receiveShadow = true;
       g.add(slot);
-      const lip = new THREE.Mesh(floorStrip(st.R - 0.012, st.R, p.center - p.half, p.center + p.half, 16, 0.0004),
-        new THREE.MeshBasicMaterial({ color: p.type === 'xtreme' ? 0xf1b11b : 0x9aa0aa }));
-      g.add(lip);
+      // ポケットの入口の坂（エクストリームは高い）
+      const ramp = new THREE.Mesh(rampStrip(st.R, st.R + p.lipLen, p.center - p.half, p.center + p.half, floorY(st.R), p.lipH),
+        new THREE.MeshStandardMaterial({ color: p.type === 'xtreme' ? 0xf1b11b : 0xb4b9c2, roughness: 0.6, side: THREE.DoubleSide }));
+      ramp.receiveShadow = true;
+      g.add(ramp);
       const label = textSprite(p.type === 'xtreme' ? 'XTREME' : 'OVER', p.type === 'xtreme' ? '#f1b11b' : '#7d828c');
       label.position.set(Math.cos(p.center) * (st.R + 0.05), yR + 0.03, Math.sin(p.center) * (st.R + 0.05));
       label.scale.set(0.06, 0.015, 1);
       g.add(label);
     }
 
-    // エクストリームライン（ギアレール）
-    // レールは射出ポイント（launch）以外の外周すべて
-    const railFrom = st.launch.center + st.launch.half;
-    const railTo = st.launch.center - st.launch.half + Math.PI * 2;
-    const railR0 = st.R - st.railBand;
-    const railMat = new THREE.MeshStandardMaterial({ color: 0x67c23a, roughness: 0.45, metalness: 0.1 });
-    this.railGlow = new THREE.MeshBasicMaterial({ color: 0xffc23d, transparent: true, opacity: 0 });
-    g.add(new THREE.Mesh(floorStrip(railR0, st.R, railFrom, railTo, 200, 0.0009), railMat));
-    g.add(new THREE.Mesh(floorStrip(railR0, st.R, railFrom, railTo, 200, 0.0013), this.railGlow));
+    // エクストリームライン（ギアレール）: 外周の垂直な段差。奥（射出ポイント）で内側へ曲がる
+    const rl = st.rail;
+    const railMat = new THREE.MeshStandardMaterial({ color: 0x67c23a, roughness: 0.45, metalness: 0.1, side: THREE.DoubleSide });
+    this.railGlow = new THREE.MeshBasicMaterial({ color: 0xffc23d, transparent: true, opacity: 0, side: THREE.DoubleSide });
+    const railGeo = railGeometry(rl, 360);
+    const rail = new THREE.Mesh(railGeo, railMat);
+    rail.castShadow = true;
+    rail.receiveShadow = true;
+    g.add(rail);
+    const glow = new THREE.Mesh(railGeo, this.railGlow);
+    glow.scale.setScalar(1.0005);
+    g.add(glow);
     // 射出ポイントの目印
-    const lp = new THREE.Mesh(floorStrip(st.R - 0.016, st.R, st.launch.center - st.launch.half, st.launch.center + st.launch.half, 16, 0.0005),
-      new THREE.MeshBasicMaterial({ color: 0x3fa7ff, transparent: true, opacity: 0.5 }));
+    const lp = new THREE.Mesh(floorStrip(railRadius(st.launch.center) - 0.03, railRadius(st.launch.center) - 0.004,
+      st.launch.center - st.launch.half, st.launch.center + st.launch.half, 16, 0.0005),
+    new THREE.MeshBasicMaterial({ color: 0x3fa7ff, transparent: true, opacity: 0.5 }));
     g.add(lp);
     this.launchGlow = lp.material;
-    const nTeeth = 150;
-    const teeth = new THREE.InstancedMesh(new THREE.BoxGeometry(0.0016, 0.0016, st.railBand * 0.9),
-      new THREE.MeshStandardMaterial({ color: 0x5c626d, roughness: 0.5, metalness: 0.5 }), nTeeth);
+    // レールの内側の歯
+    const nTeeth = 220;
+    const teeth = new THREE.InstancedMesh(new THREE.BoxGeometry(0.0012, rl.h * 0.8, 0.0014),
+      new THREE.MeshStandardMaterial({ color: 0x3f8a22, roughness: 0.5 }), nTeeth);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     for (let i = 0; i < nTeeth; i++) {
-      const a = railFrom + ((railTo - railFrom) * (i + 0.5)) / nTeeth;
-      const r = st.R - st.railBand / 2;
-      const s = floorSlope(r);
-      q.setFromEuler(new THREE.Euler(0, -a + Math.PI / 2, 0));
-      const tiltQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(-Math.sin(a), 0, Math.cos(a)), Math.atan(s));
-      q.premultiply(tiltQ);
-      m.compose(new THREE.Vector3(Math.cos(a) * r, floorY(r) + 0.0008, Math.sin(a) * r), q, new THREE.Vector3(1, 1, 1));
+      const a = (i / nTeeth) * Math.PI * 2;
+      const r = railRadius(a) - rl.w * 0.6 - 0.0004;
+      q.setFromEuler(new THREE.Euler(0, -a, 0));
+      m.compose(new THREE.Vector3(Math.cos(a) * r, floorY(r) + rl.h * 0.45, Math.sin(a) * r), q, new THREE.Vector3(1, 1, 1));
       teeth.setMatrixAt(i, m);
     }
     g.add(teeth);
@@ -228,7 +236,7 @@ export class Renderer {
     const v = this.beys[idx];
     if (!v) return;
     v.group.visible = true;
-    v.group.position.set(x, floorY(Math.hypot(x, z)) + 0.035, z);
+    v.group.position.set(x, floorY(Math.hypot(x, z)) + 0.003, z);
     v.group.quaternion.identity();
     v.visualPhase = 0;
     v.spinner.rotation.y = 0;
@@ -354,27 +362,15 @@ export class Renderer {
       world.beys.forEach((b, i) => {
         const v = this.beys[i];
         if (!v || b.state === 'ready' || b.state === 'burst') return;
-        const r = Math.hypot(b.x, b.z);
-        const y = floorY(r) + (b.state === 'out' ? b.y : 0);
-        v.group.position.set(b.x, y, b.z);
-        let ax = b.ax;
-        let az = b.az;
-        if (b.state === 'down') {
-          // 倒れたら寝かせる
-          const m = Math.hypot(ax, az) || 1;
-          v.down = Math.min(1, (v.down || 0) + dt * 3);
-          const t = 0.42 * v.down + m * (1 - v.down);
-          ax = (ax / m) * t;
-          az = (az / m) * t;
-        } else v.down = 0;
-        const axis = new THREE.Vector3(ax, 1, az).normalize();
-        v.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
-        v.visualPhase += b.w * VIS_SPIN * dt;
+        // 物理の姿勢（軸の向き）と軸先の位置をそのまま使う。回転の位相だけは見やすい速さに落とす
+        v.group.position.set(b.x, b.y, b.z);
+        v.group.quaternion.setFromUnitVectors(UP, tmpV.set(b.axis[0], b.axis[1], b.axis[2]));
+        v.visualPhase += b.spin * VIS_SPIN * dt * TIME_SCALE_VIS;
         v.spinner.rotation.y = v.visualPhase;
-        const spinRatio = Math.min(1, Math.abs(b.w) / 900);
-        v.blur.material.opacity = 0.55 * Math.pow(spinRatio, 0.7);
+        const spinRatio = Math.min(1, Math.abs(b.spin) / 900);
+        v.blur.material.opacity = b.state === 'spin' ? 0.55 * Math.pow(spinRatio, 0.7) : 0;
         if (b.onRail) railOn = true;
-        if (this.trailsOn && (b.state === 'spin')) this.trails[i].push(b.x, floorY(r) + 0.0012, b.z);
+        if (this.trailsOn && b.state === 'spin') this.trails[i].push(b.x, b.y + 0.001, b.z);
       });
     }
     this.railGlow.opacity += ((railOn ? 0.75 : 0) - this.railGlow.opacity) * Math.min(1, dt * 10);
@@ -391,6 +387,7 @@ export class Renderer {
       const r = Math.hypot(o.x, o.z);
       let fy = r < STADIUM.R ? floorY(r) : -0.06;
       if (r > STADIUM.R && r < STADIUM.R + 0.03) fy = floorY(STADIUM.R) + STADIUM.wallH;
+      if (o.y > STADIUM.ceiling) { o.y = STADIUM.ceiling; d.vy = -Math.abs(d.vy) * 0.3; }
       if (r < STADIUM.R && r > STADIUM.R - 0.01) {
         d.vx *= -0.4; d.vz *= -0.4;
       }
@@ -468,6 +465,57 @@ function floorStrip(r0, r1, a0, a1, segs, lift) {
   return g;
 }
 
+// レール: 上面と内外の垂直な面
+function railGeometry(rl, segs) {
+  const pos = [];
+  const idx = [];
+  const face = rl.w * 0.6;
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const rho = railRadius(a);
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const ri = rho - face;
+    const ro = rho + face;
+    const yi = floorY(ri);
+    const yo = floorY(ro);
+    const top = floorY(rho) + rl.h;
+    // 内側の面の下、内側の上、外側の上、外側の下
+    pos.push(c * ri, yi, s * ri, c * ri, top, s * ri, c * ro, top, s * ro, c * ro, yo, s * ro);
+    if (i < segs) {
+      const k = i * 4;
+      for (let j = 0; j < 3; j++) idx.push(k + j, k + j + 1, k + j + 4, k + j + 1, k + j + 5, k + j + 4);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+// ポケット入口の坂
+function rampStrip(r0, r1, a0, a1, y0, h) {
+  const pos = [];
+  const idx = [];
+  const segs = 12;
+  for (let i = 0; i <= segs; i++) {
+    const a = a0 + ((a1 - a0) * i) / segs;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    pos.push(c * r0, y0 + 0.0005, s * r0, c * r1, y0 + h, s * r1);
+    if (i < segs) {
+      const k = i * 2;
+      idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 function ringSector(r0, r1, a0, a1, y) {
   const segs = Math.max(4, Math.round((a1 - a0) * 40));
   const pos = [];
@@ -521,31 +569,6 @@ function makeArrow() {
 
 // ---- コマのメッシュ ----
 
-function bladeRadius(shape, R, phi, spinSign) {
-  const n = shape.n;
-  const inner = shape.inner;
-  const ph = spinSign < 0 ? phi : -phi;
-  switch (shape.kind) {
-    case 'saw': {
-      let f = ((ph * n) / (Math.PI * 2)) % 1;
-      if (f < 0) f += 1;
-      const edge = f > 0.93 ? (1 - f) / 0.07 : 1; // 切り立った刃先
-      return R * (inner + (1 - inner) * Math.pow(f, shape.p || 2) * edge);
-    }
-    case 'horn':
-      return R * (inner + (1 - inner) * Math.pow(Math.abs(Math.cos(ph)), 4));
-    case 'block': {
-      const c = Math.cos(n * ph);
-      const t = Math.max(0, Math.min(1, (c + 0.25) * 3));
-      return R * (inner + (1 - inner) * t);
-    }
-    case 'ring':
-      return R * (inner + (1 - inner) * (0.5 + 0.5 * Math.cos(n * ph)));
-    default:
-      return R * (inner + (1 - inner) * Math.pow(0.5 + 0.5 * Math.cos(n * ph), 0.5));
-  }
-}
-
 export function buildBeyMesh(spec, color) {
   const { blade, ratchet, bit } = spec;
   const group = new THREE.Group();
@@ -570,7 +593,7 @@ export function buildBeyMesh(spec, color) {
     if (i === 0) shape.moveTo(x, y);
     else shape.lineTo(x, y);
   }
-  const thick = 0.0058;
+  const thick = blade.t;
   const bg = new THREE.ExtrudeGeometry(shape, { depth: thick, bevelEnabled: true, bevelThickness: 0.0007, bevelSize: 0.0006, bevelSegments: 2, curveSegments: 4 });
   bg.rotateX(-Math.PI / 2);
   bg.translate(0, -thick / 2, 0);
@@ -597,26 +620,30 @@ export function buildBeyMesh(spec, color) {
   bladeG.position.y = spec.H;
   spinner.add(bladeG);
 
-  // ラチェット
+  // ラチェット（物理と同じ輪郭を押し出す）
   const ratG = new THREE.Group();
-  const rat = new THREE.Mesh(new THREE.CylinderGeometry(0.0118, 0.011, ratchet.h, 32), grayMat);
+  const rs = new THREE.Shape();
+  for (let i = 0; i <= 128; i++) {
+    const phi = (i / 128) * Math.PI * 2;
+    const r = ratchetRadius(ratchet, phi);
+    const x = Math.cos(phi) * r;
+    const y = Math.sin(phi) * r;
+    if (i === 0) rs.moveTo(x, y);
+    else rs.lineTo(x, y);
+  }
+  const rg = new THREE.ExtrudeGeometry(rs, { depth: ratchet.h * 0.96, bevelEnabled: false, curveSegments: 2 });
+  rg.rotateX(-Math.PI / 2);
+  rg.translate(0, -ratchet.h * 0.48, 0);
+  const rat = new THREE.Mesh(rg, grayMat);
   rat.castShadow = true;
   ratG.add(rat);
-  for (let i = 0; i < ratchet.n; i++) {
-    const a = (i / ratchet.n) * Math.PI * 2;
-    const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.004, ratchet.h * 0.7, 0.0035), grayMat);
-    tooth.position.set(Math.cos(a) * 0.0125, 0, Math.sin(a) * 0.0125);
-    tooth.rotation.y = -a;
-    tooth.castShadow = true;
-    ratG.add(tooth);
-  }
   ratG.position.y = bit.h + ratchet.h / 2;
   spinner.add(ratG);
 
   // ビット（ギア＋先端）
   const bitG = new THREE.Group();
   const bodyH = bit.h * 0.5;
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.0078, 0.007, bodyH, 24), darkMat);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(BIT_R, BIT_R * 0.92, bodyH, 24), darkMat);
   body.position.y = bit.h - bodyH / 2;
   body.castShadow = true;
   bitG.add(body);
@@ -624,24 +651,24 @@ export function buildBeyMesh(spec, color) {
   for (let i = 0; i < nT; i++) {
     const a = (i / nT) * Math.PI * 2;
     const t = new THREE.Mesh(new THREE.BoxGeometry(0.0016, 0.0022, 0.0016), metalMat);
-    t.position.set(Math.cos(a) * 0.0079, bit.h - bodyH * 0.75, Math.sin(a) * 0.0079);
+    t.position.set(Math.cos(a) * GEAR_R, bit.h * 0.45, Math.sin(a) * GEAR_R);
     t.rotation.y = -a;
     bitG.add(t);
   }
   const tipH = bit.h - bodyH;
   let tip;
   const tipMat = bit.id === 'RF' ? new THREE.MeshStandardMaterial({ color: 0x1d1f24, roughness: 0.95 }) : whiteMat;
-  if (bit.tip === 'ball') {
+  if (bit.shape === 'ball') {
     tip = new THREE.Mesh(new THREE.SphereGeometry(tipH * 0.62, 20, 14), tipMat);
     tip.position.y = tipH * 0.62;
     const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.006, tipH * 0.55, tipH * 0.5, 20), tipMat);
     neck.position.y = tipH * 0.78;
     bitG.add(neck);
-  } else if (bit.tip === 'needle') {
+  } else if (bit.shape === 'needle') {
     tip = new THREE.Mesh(new THREE.ConeGeometry(0.0055, tipH, 20), tipMat);
     tip.rotation.x = Math.PI;
     tip.position.y = tipH / 2;
-  } else if (bit.tip === 'point') {
+  } else if (bit.shape === 'point') {
     tip = new THREE.Mesh(new THREE.CylinderGeometry(0.006, bit.a + 0.0006, tipH, 20), tipMat);
     tip.position.y = tipH / 2;
   } else {

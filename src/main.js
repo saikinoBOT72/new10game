@@ -1,9 +1,12 @@
 import { BLADES, RATCHETS, BITS, LAYERS, SHAFT, findPart } from './parts.js';
-import { buildSpec, specStats, soloSpinTime, ratchetExposure, createBattle, launch, step, judge, POINTS } from './physics.js';
+import { buildSpec, soloRunner, createBattle, launch, advance, judge, POINTS } from './physics.js';
 import { Renderer, TEAM_COLORS } from './render.js';
 import { Sound } from './audio.js';
 
-const DT = 1 / 600;
+// 物理の時間を現実の何倍で進めるか（標準は 0.5 倍のスロー）
+const TIME_SCALE = 0.5;
+// 1フレームで計算する物理時間の上限（重い端末で固まらないように）
+const MAX_SIM_PER_FRAME = 1 / 30;
 const TARGET = 4;
 // 左右から向かい合って打つ。スタジアムは左右対称だが回転対称ではないので、ラウンドごとに入れ替える。
 // 自分の側の扇形の中なら、タップで好きな位置から打てる
@@ -148,11 +151,10 @@ function refreshCustom() {
       $$('.chip', box).forEach((c) => c.classList.toggle('on', c.dataset.id === sel[box.dataset.cat]));
     });
     const spec = specOf(side);
-    const st = specStats(spec);
-    $('[data-combo]', card).innerHTML = `${spec.blade.name} ${spec.ratchet.name}${spec.bit.id}<small>${st.weight.toFixed(1)}g ・ ${spec.blade.spin === 'L' ? '左回転' : '右回転'} ・ 単体で約${Math.round(soloSpinTime(spec))}秒</small>`;
-    const rows = [['攻撃', st.attack], ['防御', st.defense], ['持久', st.stamina], ['バースト耐性', st.burst], ['ダッシュ', st.dash]];
-    $('[data-stats]', card).innerHTML = rows.map(([k, v]) => `<span>${k}</span><div class="meter"><i style="width:${(v * 100).toFixed(0)}%"></i></div>`).join('')
-      + `<span>ブレードの高さ</span><div class="height">${st.height.toFixed(1)} mm</div>`;
+    $('[data-combo]', card).innerHTML = `${spec.blade.name} ${spec.ratchet.name}${spec.bit.id}<small>${(spec.m * 1000).toFixed(1)}g ・ ${spec.blade.spin === 'L' ? '左回転' : '右回転'}</small>`;
+    $('[data-stats]', card).innerHTML = physRows(spec).map(([k, v, f]) => `<span>${k}</span><div class="pv"><div class="meter"><i style="width:${(Math.max(0.04, Math.min(1, f)) * 100).toFixed(0)}%"></i></div><b>${v}</b></div>`).join('')
+      + `<span>単体で回る時間</span><div class="pv"><div class="meter"><i data-solo style="width:0%"></i></div><b data-solo-t>計算中…</b></div>`;
+    startSolo(side, spec);
     $('[data-desc]', card).innerHTML = comboNotes(spec).map((t) => `<span class="note">${t}</span>`).join('')
       + `<span class="parts-desc">上層: ${spec.blade.desc}<br>中層: ${spec.ratchet.desc}<br>下層: ${spec.bit.desc}</span>`;
     state.specs[side] = spec;
@@ -162,48 +164,83 @@ function refreshCustom() {
   $('#matchup').innerHTML = matchupNotes(state.specs[0], state.specs[1]);
 }
 
-// 組み合わせ診断: パーツどうしの噛み合わせを言葉にする
+// 物理量そのものを見せる（バーの長さは全パーツの範囲に対する位置）
+function physRows(spec) {
+  const I = spec.I[4] * 1e6;
+  const w0 = 0.95 * (520 + 430 * 0.9); // 標準的なシュートの回転数
+  const E = 0.5 * spec.I[4] * w0 * w0;
+  const lock = spec.lockFull * 1e3;
+  return [
+    ['重さ', `${(spec.m * 1000).toFixed(1)} g`, (spec.m - 0.042) / 0.008],
+    ['回転の慣性モーメント', `${I.toFixed(2)}×10⁻⁶ kg·m²`, (I - 7.5) / 5],
+    ['回転エネルギー', `${E.toFixed(2)} J`, (E - 2.5) / 2.5],
+    ['空気抵抗', `${(spec.air * 1e10).toFixed(1)}×10⁻¹⁰`, (spec.air * 1e10 - 3) / 6],
+    ['軸先の平面の半径', `${(spec.bit.a * 1000).toFixed(1)} mm`, spec.bit.a / 0.002],
+    ['軸先の摩擦係数', spec.tip.mu.toFixed(2), (spec.tip.mu - 0.2) / 0.45],
+    ['クラッチのトルク', `${(spec.bit.clutch * 1000).toFixed(1)} mN·m`, spec.bit.clutch / 0.008],
+    ['ロックの強さ', `${lock.toFixed(2)} mN·m·s`, (lock - 0.6) / 0.8],
+    ['ブレードの高さ', `${(spec.bladeBand[0] * 1000).toFixed(1)}〜${(spec.bladeBand[1] * 1000).toFixed(1)} mm`, (spec.H - 0.018) / 0.006],
+  ];
+}
+
+// 単体で回したときの時間は、画面を止めないよう少しずつ計算する
+const solo = [null, null];
+function startSolo(side, spec) {
+  solo[side] = soloRunner(spec);
+  showSolo(side);
+}
+function showSolo(side) {
+  const r = solo[side];
+  const card = $(`.card[data-side="${side}"]`);
+  if (!r || !card) return;
+  const bar = $('[data-solo]', card);
+  const txt = $('[data-solo-t]', card);
+  if (!bar || !txt) return;
+  if (r.done) {
+    txt.textContent = `${r.time.toFixed(0)} 秒`;
+    bar.style.width = `${Math.min(100, (r.time / 160) * 100).toFixed(0)}%`;
+  } else txt.textContent = '計算中…';
+}
+function runSolo() {
+  for (const side of [0, 1]) {
+    const r = solo[side];
+    if (r && !r.done) {
+      if (r.run(6)) showSolo(side);
+      return; // 1フレームに1つずつ
+    }
+  }
+}
+
+// 組み合わせ診断: 物理的に起きることを言葉にする
 function comboNotes(spec) {
   const { blade, ratchet, bit } = spec;
   const notes = [];
-  const attackBlade = blade.smash >= 0.7;
-  const heavy = blade.m >= 0.038;
-  const stamTip = bit.type === '持久軸' || bit.type === '防御軸';
-  if (spec.H <= 0.0192 && attackBlade) notes.push('◎ 低い攻撃型: 刃が相手の中層に届くので、バーストを狙いやすい');
-  else if (spec.H <= 0.0192) notes.push('○ 背が低い: 重心が低く安定し、相手の中層に当たりやすい');
-  if (spec.H >= 0.0215) notes.push('△ 背が高い: 低い相手に中層を叩かれやすい。そのかわり傾いても床をこすりにくい');
-  if (heavy && !attackBlade) notes.push('△ 防御的な重さ: 中層を叩かれるとブレードの慣性でロックが外れやすい');
-  if (heavy && attackBlade) notes.push('○ 攻撃的な重さ: 自分から当てる重さなので、攻めている間は弱点にならない');
-  if (bit.shaft === 'thin' && ratchet.guard >= 0.5) notes.push('○ 細いシャフトを丸いラチェットで補う構成');
-  else if (bit.shaft === 'thin' && attackBlade) notes.push('△ 攻撃ブレードに細いシャフト: 攻めるのに自分もバーストしやすい');
-  else if (bit.shaft === 'thin') notes.push('△ シャフトが細い: 中層を叩かれるとバーストしやすい');
-  if (bit.gear * bit.clutch >= 0.75) notes.push('◎ 硬いクラッチ: レールで急加速し、射出ポイントから縦断アタック。ただしぐらつきやすい');
-  if (attackBlade && stamTip) notes.push('○ 攻撃刃×持久軸: 中央で待ち構えるカウンター型');
-  if (!attackBlade && bit.a >= 0.0015) notes.push('△ 弾く力の弱いブレードで走り回る。回転を減らすだけになりがち');
-  if (blade.spin === 'L') notes.push('○ 左回転: 右回転の相手とは接点がこすれ合わず、回転を奪い合う');
-  if (!notes.length) {
-    if (attackBlade && bit.shaft === 'thick') notes.push('○ 攻撃刃×攻撃軸×太いシャフト: 正統派アタッカー。高さが同じ相手にはオーバーやエクストリームで勝ちを狙う');
-    else notes.push('○ 素直なバランス。相手の高さを見てラチェットを選ぼう');
-  }
+  const sharp = blade.shape.kind === 'saw' || blade.shape.kind === 'block' || blade.shape.kind === 'horn';
+  const stamTip = bit.a === 0;
+  if (spec.H <= 0.0186) notes.push('○ 背が低い: 重心が低く、ブレードが相手のラチェットの高さに届きやすい');
+  if (spec.H >= 0.0208) notes.push('△ 背が高い: 低い相手の刃が自分のラチェットに当たりやすい');
+  if (blade.m >= 0.038) notes.push('△ ブレードが重い: ラチェットを叩かれると、ブレードの慣性の分だけロックに大きな力がかかる');
+  if (bit.shaft === 'thin') notes.push('△ シャフトが細い: ロックの締め付けが弱い');
+  if (bit.clutch >= 0.006) notes.push('◎ クラッチが強い: レールの上で回転を速度に変えやすい（そのぶん回転は減る）');
+  if (sharp && stamTip) notes.push('○ 角のある刃×点の軸先: 中央で待って、来た相手を弾く');
+  if (!sharp && bit.a > 0) notes.push('△ 丸い刃で走り回る: 当たっても弾く力が小さく、回転を減らすだけになりやすい');
+  if (ratchet.n === 1) notes.push('△ 一枚突起: 重心が軸から少しずれていて、わずかに振れながら回る');
+  if (blade.spin === 'L') notes.push('○ 左回転: 右回転の相手とは接点の表面が同じ向きに動き、こすれずに回転を奪い合う');
+  if (!notes.length) notes.push('○ 素直な組み合わせ。相手の高さを見てラチェットを選ぼう');
   return notes.slice(0, 4);
 }
 
-// 2体の高さを比べて、どちらの中層が狙われるか
+// 高さの相性: 自分のブレードの帯が相手のラチェットの帯にどれだけ重なるか
 function matchupNotes(a, b) {
   if (!a || !b) return '';
   const names = setNames();
-  const d = (a.H - b.H) * 1000;
-  const exA = ratchetExposure(a, b);
-  const exB = ratchetExposure(b, a);
-  let msg;
-  if (Math.max(exA, exB) < 0.25) msg = 'ブレードの高さはほぼ同じ。上層どうしの当たりになり、バーストは起きにくい（傾くと中層に当たり始める）';
-  else {
-    const low = d < 0 ? 0 : 1;
-    const high = 1 - low;
-    msg = `${names[low]}のブレードが ${Math.abs(d).toFixed(1)}mm 低い → ${names[high]}の中層（ラチェット）に当たり、${names[high]}がバーストしやすい`;
-  }
-  const pct = (x) => `${Math.round(x * 100)}%`;
-  return `<b>高さの相性</b>${msg}<small>中層への当たりやすさ ${names[0]} ${pct(exA)} ／ ${names[1]} ${pct(exB)}</small>`;
+  const reach = (x, y) => (Math.min(x.bladeBand[1], y.ratchetBand[1]) - Math.max(x.bladeBand[0], y.ratchetBand[0])) * 1000;
+  const ra = reach(a, b);
+  const rb = reach(b, a);
+  const line = (n, o, r) => (r > 0
+    ? `${n}のブレードは${o}のラチェットに ${r.toFixed(1)}mm 重なる（当たると${o}のロックに力がかかる）`
+    : `${n}のブレードは${o}のラチェットに届かない（あと ${(-r).toFixed(1)}mm）`);
+  return `<b>高さの相性（まっすぐ立っているとき）</b>${line(names[0], names[1], ra)}<br>${line(names[1], names[0], rb)}<small>傾いたり跳ねたりすると、届く高さは変わります</small>`;
 }
 
 function setNames() {
@@ -374,7 +411,7 @@ function updateHud() {
   const w = state.world;
   if (!w) return;
   w.beys.forEach((b, i) => {
-    const rpm = b.state === 'spin' ? (Math.abs(b.w) * 60) / (2 * Math.PI) : 0;
+    const rpm = b.state === 'spin' ? (Math.abs(b.spin) * 60) / (2 * Math.PI) : 0;
     $(`[data-rpm="${i}"]`).textContent = Math.round(rpm).toLocaleString();
     $(`[data-bar="${i}"]`).style.width = `${Math.min(100, (rpm / 9000) * 100)}%`;
     // ロック負荷: 4段。越えた段（赤）は自然回復では戻らない
@@ -384,8 +421,8 @@ function updateHud() {
       cell.firstChild.style.width = `${(f * 100).toFixed(0)}%`;
       cell.classList.toggle('full', f >= 1);
     });
-    const v = Math.hypot(b.vx, b.vz);
-    const tilt = (Math.hypot(b.ax, b.az) * 180) / Math.PI;
+    const v = b.speed;
+    const tilt = (b.tilt * 180) / Math.PI;
     const label = { spin: b.onRail ? 'レール' : '', down: '停止', out: '場外', burst: 'バースト', ready: '' }[b.state];
     $(`[data-phys="${i}"]`).textContent = `${v.toFixed(2)} m/s ・ 傾き ${tilt.toFixed(0)}° ${label}`;
   });
@@ -467,7 +504,7 @@ $('#btnCam').onclick = () => {
   R.setCamera(cams[(cams.indexOf(R.mode) + 1) % cams.length]);
   if (state.screen === 'aim') R.controls.enabled = !humans().some(Boolean);
 };
-const speeds = [1, 2, 0.5, 0.25];
+const speeds = [1, 2, 4, 0.5];
 $('#btnSpeed').onclick = () => {
   state.speed = speeds[(speeds.indexOf(state.speed) + 1) % speeds.length];
   $('#btnSpeed').textContent = `×${state.speed}`;
@@ -503,6 +540,7 @@ function frame(now) {
   }
 
   if (state.screen === 'custom') {
+    runSolo();
     R.updatePreview(dt);
   } else {
     const w = state.world;
@@ -511,16 +549,12 @@ function frame(now) {
       if (state.autoT > 0.9) launchAll();
     }
     if (state.screen === 'battle' && w) {
-      state.acc += dt * state.speed;
-      let n = 0;
-      while (state.acc >= DT && n < 2400) {
-        step(w, DT);
-        state.acc -= DT;
-        n++;
-        if (!state.result) {
-          const res = judge(w);
-          if (res) onResult(res);
-        }
+      // 物理は自前の刻み幅で進む（当たりそうなときは自動で細かくなる）
+      const simDt = Math.min(MAX_SIM_PER_FRAME, dt * TIME_SCALE * state.speed);
+      advance(w, simDt);
+      if (!state.result) {
+        const res = judge(w);
+        if (res) onResult(res);
       }
       for (const ev of w.events) {
         R.onEvent(ev);
@@ -532,10 +566,10 @@ function frame(now) {
         if (!state.bannerShown && state.resultT > 1.1) showBanner();
       }
       // 長すぎる試合の保険
-      if (!state.result && w.t > 150) onResult({ winner: -1, type: 'spin', points: 0 });
+      if (!state.result && w.t > 300) onResult({ winner: -1, type: 'spin', points: 0 });
       sound.update(w);
     }
-    R.update(w, dt);
+    R.update(w, dt * TIME_SCALE * state.speed);
     updateHud();
   }
   requestAnimationFrame(frame);
