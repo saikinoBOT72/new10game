@@ -1,7 +1,7 @@
 // Three.js による描画。物理は src/physics.js 側（ここでは読むだけ）。
 import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
-import { STADIUM, bowlY as floorY, railRadius } from './physics.js';
+import { STADIUM, bowlY as floorY, railRadius, pocketAt, wallRadius } from './physics.js';
 import { bladeRadius, ratchetRadius, BIT_R, GEAR_R } from './shapes.js';
 
 const S = 10; // 物理の 1m を描画の 10 単位にする
@@ -87,27 +87,31 @@ export class Renderer {
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xb9bdc5 });
     for (const r of [0.06, 0.125]) g.add(new THREE.Mesh(floorStrip(r - 0.0006, r + 0.0006, 0, Math.PI * 2, 160, 0.0003), lineMat));
 
-    // 壁と外枠（ポケットの部分は開ける）
+    // 壁と外枠（ポケットの部分は開ける。ポケットの左右では壁がなめらかに外へ開く）
     const yR = floorY(st.R);
     const ranges = openRanges(st);
+    const outerR = st.R + st.flare.out + 0.03;
     for (const [a0, a1] of ranges) {
-      const len = a1 - a0;
-      const wall = new THREE.Mesh(
-        new THREE.CylinderGeometry(st.R, st.R, st.wallH, Math.max(4, Math.round(len * 40)), 1, true, Math.PI / 2 - a1, len),
-        wallMat,
-      );
-      wall.position.y = yR + st.wallH / 2;
+      const segs = Math.max(8, Math.round((a1 - a0) * 120));
+      // 壁の足元の平らな縁（ボウルの外周から壁まで）と壁の内面
+      const wall = new THREE.Mesh(sweep(a0, a1, segs, (a) => {
+        const rw = wallRadius(a);
+        return [[st.R, yR + 0.0003], [rw, yR + 0.0003], [rw, yR], [rw, yR + st.wallH]];
+      }), wallMat);
       wall.receiveShadow = true;
       g.add(wall);
-      const top = new THREE.Mesh(ringSector(st.R, st.R + 0.03, a0, a1, yR + st.wallH), bodyMat);
+      const top = new THREE.Mesh(sweep(a0, a1, segs, (a) => [[wallRadius(a), yR + st.wallH], [outerR, yR + st.wallH]]), bodyMat);
       top.receiveShadow = true;
       g.add(top);
-      const outer = new THREE.Mesh(
-        new THREE.CylinderGeometry(st.R + 0.03, st.R + 0.03, st.wallH + 0.09, Math.max(4, Math.round(len * 40)), 1, true, Math.PI / 2 - a1, len),
-        bodyMat,
-      );
-      outer.position.y = yR + st.wallH - (st.wallH + 0.09) / 2;
+      const outer = new THREE.Mesh(sweep(a0, a1, segs, () => [[outerR, yR + st.wallH], [outerR, yR - 0.09]]), bodyMat);
       g.add(outer);
+    }
+    // ポケットの口の上の縁
+    for (const p of st.pockets) {
+      const lintel = new THREE.Mesh(sweep(p.center - p.half, p.center + p.half, 16, () => [
+        [st.R + st.flare.out, yR + st.pocketTop], [st.R + st.flare.out, yR + st.wallH], [outerR, yR + st.wallH],
+      ]), wallMat);
+      g.add(lintel);
     }
 
     // ポケット
@@ -159,7 +163,7 @@ export class Renderer {
     const q = new THREE.Quaternion();
     for (let i = 0; i < nTeeth; i++) {
       const a = (i / nTeeth) * Math.PI * 2;
-      const r = railRadius(a) - rl.w * 0.6 - 0.0004;
+      const r = pocketAt(a) ? 0 : railRadius(a) - rl.w * 0.6 - 0.0004;
       q.setFromEuler(new THREE.Euler(0, -a, 0));
       m.compose(new THREE.Vector3(Math.cos(a) * r, floorY(r) + rl.h * 0.45, Math.sin(a) * r), q, new THREE.Vector3(1, 1, 1));
       teeth.setMatrixAt(i, m);
@@ -385,10 +389,12 @@ export class Renderer {
       o.z += d.vz * dt;
       o.y += d.vy * dt;
       const r = Math.hypot(o.x, o.z);
-      let fy = r < STADIUM.R ? floorY(r) : -0.06;
-      if (r > STADIUM.R && r < STADIUM.R + 0.03) fy = floorY(STADIUM.R) + STADIUM.wallH;
+      const rw = wallRadius(Math.atan2(o.z, o.x));
+      const inPocket = pocketAt(Math.atan2(o.z, o.x));
+      let fy = r < rw ? floorY(r) : -0.06;
+      if (!inPocket && r >= rw && r < STADIUM.R + STADIUM.flare.out + 0.03) fy = floorY(STADIUM.R) + STADIUM.wallH;
       if (o.y > STADIUM.ceiling) { o.y = STADIUM.ceiling; d.vy = -Math.abs(d.vy) * 0.3; }
-      if (r < STADIUM.R && r > STADIUM.R - 0.01) {
+      if (!inPocket && r < rw && r > rw - 0.01 && o.y < floorY(STADIUM.R) + STADIUM.wallH) {
         d.vx *= -0.4; d.vz *= -0.4;
       }
       if (o.y < fy + 0.003) {
@@ -444,6 +450,30 @@ function openRanges(st) {
   return out;
 }
 
+// 角度 a0..a1 にわたって断面 profile(a) = [[r, y], ...] をつないだ面（物理の角度 atan2(z,x)）
+function sweep(a0, a1, segs, profile) {
+  const pos = [];
+  const idx = [];
+  let n = 0;
+  for (let i = 0; i <= segs; i++) {
+    const a = a0 + ((a1 - a0) * i) / segs;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const pr = profile(a);
+    n = pr.length;
+    for (const [r, y] of pr) pos.push(c * r, y, s * r);
+    if (i < segs) {
+      const k = i * n;
+      for (let j = 0; j + 1 < n; j++) idx.push(k + j, k + j + n, k + j + 1, k + j + 1, k + j + n, k + j + n + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 // 床の起伏に沿った帯（物理の角度 atan2(z,x) で指定）
 function floorStrip(r0, r1, a0, a1, segs, lift) {
   const pos = [];
@@ -465,13 +495,15 @@ function floorStrip(r0, r1, a0, a1, segs, lift) {
   return g;
 }
 
-// レール: 上面と内外の垂直な面
+// レール: 上面と内外の垂直な面（ポケットの前では途切れる）
 function railGeometry(rl, segs) {
   const pos = [];
   const idx = [];
   const face = rl.w * 0.6;
+  let prevOn = false;
   for (let i = 0; i <= segs; i++) {
     const a = (i / segs) * Math.PI * 2;
+    const on = !pocketAt(a);
     const rho = railRadius(a);
     const c = Math.cos(a);
     const s = Math.sin(a);
@@ -482,10 +514,11 @@ function railGeometry(rl, segs) {
     const top = floorY(rho) + rl.h;
     // 内側の面の下、内側の上、外側の上、外側の下
     pos.push(c * ri, yi, s * ri, c * ri, top, s * ri, c * ro, top, s * ro, c * ro, yo, s * ro);
-    if (i < segs) {
-      const k = i * 4;
+    if (i > 0 && on && prevOn) {
+      const k = (i - 1) * 4;
       for (let j = 0; j < 3; j++) idx.push(k + j, k + j + 1, k + j + 4, k + j + 1, k + j + 5, k + j + 4);
     }
+    prevOn = on;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -651,7 +684,7 @@ export function buildBeyMesh(spec, color) {
   for (let i = 0; i < nT; i++) {
     const a = (i / nT) * Math.PI * 2;
     const t = new THREE.Mesh(new THREE.BoxGeometry(0.0016, 0.0022, 0.0016), metalMat);
-    t.position.set(Math.cos(a) * GEAR_R, bit.h * 0.45, Math.sin(a) * GEAR_R);
+    t.position.set(Math.cos(a) * GEAR_R, bit.h * 0.6, Math.sin(a) * GEAR_R);
     t.rotation.y = -a;
     bitG.add(t);
   }

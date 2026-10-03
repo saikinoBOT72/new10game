@@ -14,49 +14,53 @@ export const LAYERS = {
 };
 
 // 素材ごとの反発係数と摩擦係数（相手の素材との平均を使う）
+// mu: スタジアム（ABS系の硬いプラスチック）とのすべり摩擦係数。
+//   軸先の plastic はポリアセタール（POM）を想定（自己潤滑性があり、ABS に対して 0.2〜0.3）
 export const MATERIALS = {
   metal: { e: 0.5, mu: 0.2 },
-  plastic: { e: 0.4, mu: 0.32 },
-  rubber: { e: 0.3, mu: 0.9 },
+  plastic: { e: 0.4, mu: 0.25 },
+  rubber: { e: 0.3, mu: 0.8 },
+  // スタジアムの壁・カバー（磨かれた透明ポリカーボネート）。金属が秒速10m以上ですべるときの摩擦は小さい
+  wall: { e: 0.35, mu: 0.1 },
 };
 
 // m: 全体の重量, hub: 中央のプラスチック部分の重量, metalIn: 金属部分の内径（大きいほど外周に重さが集まる）
-// R: 最大半径, t: 厚み, shape: 輪郭
+// R: 最大半径（実物のブレードは直径45〜47mm）, t: 厚み, shape: 輪郭
 export const BLADES = [
   {
     id: 'saber', name: 'ブレイズセイバー', type: 'アタック', spin: 'R',
-    m: 0.0355, hub: 0.005, metalIn: 0.0135, R: 0.0225, t: 0.0062,
-    shape: { kind: 'saw', n: 3, inner: 0.72, p: 2.2 },
+    m: 0.0355, hub: 0.005, metalIn: 0.0145, R: 0.0232, t: 0.0062,
+    shape: { kind: 'saw', n: 3, inner: 0.8, p: 2.2 },
     desc: '3枚の切り立った刃。刃の面が斜めなので、当たると相手を外へ弾き出す。',
   },
   {
     id: 'hammer', name: 'クエイクハンマー', type: 'アタック(重)', spin: 'R',
-    m: 0.0405, hub: 0.005, metalIn: 0.012, R: 0.0215, t: 0.0064,
+    m: 0.0405, hub: 0.005, metalIn: 0.0125, R: 0.0225, t: 0.0064,
     shape: { kind: 'block', n: 4, inner: 0.8 },
     desc: '重い4ブロック。角ばった面で押し込む。',
   },
   {
     id: 'horn', name: 'ツインホーン', type: 'バランス', spin: 'R',
-    m: 0.0365, hub: 0.005, metalIn: 0.013, R: 0.022, t: 0.0062,
+    m: 0.0365, hub: 0.005, metalIn: 0.014, R: 0.023, t: 0.0062,
     shape: { kind: 'horn', n: 2, inner: 0.78 },
     desc: '2本角。2回対称なので慣性に偏りがあり、少し揺れやすい。',
   },
   {
     id: 'fort', name: 'アイアンフォート', type: 'ディフェンス', spin: 'R',
-    m: 0.0385, hub: 0.005, metalIn: 0.008, R: 0.0212, t: 0.0064,
+    m: 0.0385, hub: 0.005, metalIn: 0.0085, R: 0.0222, t: 0.0064,
     shape: { kind: 'round', n: 6, inner: 0.9 },
     desc: '丸く重い円盤。当たっても滑って受け流す。重さが中心寄りなので回転力は控えめ。',
   },
   {
     id: 'gale', name: 'ゲイルリング', type: 'スタミナ', spin: 'R',
-    m: 0.0345, hub: 0.005, metalIn: 0.0168, R: 0.0218, t: 0.006,
+    m: 0.0345, hub: 0.005, metalIn: 0.0178, R: 0.0228, t: 0.006,
     shape: { kind: 'ring', n: 10, inner: 0.94 },
     desc: '重さを外周の細いリングに集めた。回転力が大きく、凹凸が小さいので空気抵抗も小さい。',
   },
   {
     id: 'fang', name: 'リバースファング', type: 'バランス(左)', spin: 'L',
-    m: 0.0355, hub: 0.005, metalIn: 0.0135, R: 0.022, t: 0.0062,
-    shape: { kind: 'saw', n: 4, inner: 0.76, p: 1.6 },
+    m: 0.0355, hub: 0.005, metalIn: 0.0145, R: 0.023, t: 0.0062,
+    shape: { kind: 'saw', n: 4, inner: 0.82, p: 1.6 },
     desc: '左回転の4枚刃。右回転と当たると接点の表面が同じ向きに動き、回転を奪い合う。',
   },
 ];
@@ -72,14 +76,16 @@ export const RATCHETS = [
 
 // h: 高さ, a: 先端の平らな面の半径, rr: 先端の丸み（縁）の半径, tip: 先端の素材
 // shaft: シャフトの太さ（ラチェットの爪がシャフトを締め付けるので、太いほどロックが外れにくい）
-// clutch: 半クラッチが伝えられる最大トルク [N·m]（大きいほどレールで急加速する）
+// clutch: 半クラッチが伝えられる最大トルク [N·m]（大きいほどレールで急加速する）。
+//   実物のダッシュは約1/4周で秒速3m以上に達する（加速度 約18m/s²）ことから、攻撃軸は 6〜8mN·m と見積もった。
+//   なお、滑りながら速さ v まで加速するのに使う回転エネルギーは m·v·ω·r_gear で、クラッチの強さによらない
 export const BITS = [
   { id: 'F', name: 'フラット', type: '攻撃軸', shaft: 'thick', m: 0.0021, h: 0.0105, a: 0.0026, rr: 0.0012, tipMat: 'plastic', clutch: 0.006, shape: 'flat', desc: '平らな先端の縁で床を蹴って走る。シャフトが太い。' },
-  { id: 'LF', name: 'ローフラット', type: '攻撃軸', shaft: 'thick', m: 0.0020, h: 0.0092, a: 0.0024, rr: 0.0010, tipMat: 'plastic', clutch: 0.005, shape: 'flat', desc: '低いフラット。全体が1.3mm低くなる。' },
+  { id: 'LF', name: 'ローフラット', type: '攻撃軸', shaft: 'thick', m: 0.0020, h: 0.0092, a: 0.0024, rr: 0.0010, tipMat: 'plastic', clutch: 0.0055, shape: 'flat', desc: '低いフラット。全体が1.3mm低くなる。' },
   { id: 'RF', name: 'ラバーフラット', type: '攻撃軸', shaft: 'thick', m: 0.0023, h: 0.0105, a: 0.0028, rr: 0.0012, tipMat: 'rubber', clutch: 0.008, shape: 'flat', desc: 'ゴムの先端。床を強く蹴るぶん、摩擦で回転も減る。' },
-  { id: 'T', name: 'テーパー', type: 'バランス軸', shaft: 'thick', m: 0.0021, h: 0.0108, a: 0.0007, rr: 0.0012, tipMat: 'plastic', clutch: 0.0035, shape: 'point', desc: '小さな平面の付いた尖り。動きと粘りの中間。' },
-  { id: 'B', name: 'ボール', type: '持久軸', shaft: 'thin', m: 0.0022, h: 0.0110, a: 0, rr: 0.0024, tipMat: 'plastic', clutch: 0.002, shape: 'ball', desc: '丸い先端。床との接点が一点で、中央に留まりやすい。シャフトが細い。' },
-  { id: 'N', name: 'ニードル', type: '防御軸', shaft: 'thin', m: 0.0021, h: 0.0112, a: 0, rr: 0.0005, tipMat: 'plastic', clutch: 0.0015, shape: 'needle', desc: '針の先端。ほとんど転がらず、その場で踏ん張る。シャフトが細い。' },
+  { id: 'T', name: 'テーパー', type: 'バランス軸', shaft: 'thick', m: 0.0021, h: 0.0108, a: 0.0007, rr: 0.0012, tipMat: 'plastic', clutch: 0.004, shape: 'point', desc: '小さな平面の付いた尖り。動きと粘りの中間。' },
+  { id: 'B', name: 'ボール', type: '持久軸', shaft: 'thin', m: 0.0022, h: 0.0110, a: 0, rr: 0.0024, tipMat: 'plastic', clutch: 0.0025, shape: 'ball', desc: '丸い先端。床との接点が一点で、中央に留まりやすい。シャフトが細い。' },
+  { id: 'N', name: 'ニードル', type: '防御軸', shaft: 'thin', m: 0.0021, h: 0.0112, a: 0, rr: 0.0005, tipMat: 'plastic', clutch: 0.002, shape: 'needle', desc: '針の先端。ほとんど転がらず、その場で踏ん張る。シャフトが細い。' },
 ];
 
 export const SHAFT = { thick: { name: '太', clamp: 1.35 }, thin: { name: '細', clamp: 0.8 } };

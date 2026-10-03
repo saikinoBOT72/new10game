@@ -341,12 +341,16 @@ function comAim(i) {
   const toCenter = Math.atan2(-s.z, -s.x);
   const diff = state.mode === 'watch' ? 2 : state.diff;
   const r = Math.random;
-  const attacker = spec.bit.a > 0.0012;
-  let angle = toCenter + (r() - 0.5) * [1.6, 1.1, 0.6][diff];
-  // 攻撃型は斜めに打ち出してレールに乗せる
-  if (attacker && r() < 0.55) angle = toCenter + (r() < 0.5 ? 1 : -1) * (0.8 + r() * 0.5);
-  const power = [0.5, 0.7, 0.88][diff] + r() * [0.3, 0.22, 0.12][diff];
-  return { angle, power, bank: attacker && r() < 0.5 ? 1 : 0 };
+  const flat = spec.bit.a > 0.0012;
+  const spread = [1.2, 0.8, 0.4][diff];
+  if (flat) {
+    // 平らな軸先: レールを走る向き（右回転なら反時計回り）へ、外周へ斜めに強く打ち出す。
+    // 弱いCOMはときどき逆向きに打つ
+    const side = (r() < [0.35, 0.15, 0.03][diff] ? 1 : -1) * -spec.spinSign;
+    return { angle: toCenter + side * (1.0 + r() * 0.4) + (r() - 0.5) * spread, power: [0.6, 0.8, 0.95][diff] + r() * 0.05, bank: 1 };
+  }
+  // 点の軸先: 中央へ弱めに置いて、その場で長く回す
+  return { angle: toCenter + (r() - 0.5) * spread, power: [0.5, 0.3, 0.18][diff] + r() * 0.1, bank: 0 };
 }
 
 function launchAll() {

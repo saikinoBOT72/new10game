@@ -33,18 +33,15 @@ const DPHI = TAU / NPOLAR;
 const deg = (d) => (d * Math.PI) / 180;
 
 export const STADIUM = {
-  R: 0.19, // 壁の内半径
+  // 壁の内半径。ギアがレールに噛む位置で、いちばん大きいブレードの縁と壁のあいだが約2mm（ギアがレールを越えられない）
+  R: 0.187,
   wallH: 0.04,
   ceiling: 0.085, // 透明カバーの高さ（床の中心から）。壁はカバーまでつながっている
   pocketTop: 0.035, // ポケットの開口の高さ（壁の位置の床から）
-  // 床の断面: 中央は y = curve r² のボウル。外周（レールのあたり）に向かって傾きをゆるめ、
-  // ほぼ平らなリングにつなぐ（急な斜面のままだと、外へ走ったコマが坂で跳ね上がってしまう）
-  curve: 0.5,
-  bowlR: 0.12, // ここまでボウル
-  flatR: 0.16, // ここから外は傾き outSlope の平らなリング
-  outSlope: 0.06,
+  // 床の断面: 中央が低い皿形 y = curve r² で、外周に向かって上がり続け、その足元にレールがある
+  curve: 0.45,
   // エクストリームライン: 外周の段差（ギアが噛む）。奥（-z）で内側に曲がり、射出ポイントになる
-  rail: { r: 0.171, h: 0.0045, w: 0.0035, notchAt: deg(-90), notchDepth: 0.026, notchWidth: 0.22 },
+  rail: { r: 0.171, h: 0.0065, w: 0.0035, notchAt: deg(-90), notchDepth: 0.026, notchWidth: 0.22 },
   launch: { center: deg(-90), half: deg(14) },
   pockets: [
     // エクストリームゾーンは入口が高い。オーバーゾーンはなだらか
@@ -52,6 +49,9 @@ export const STADIUM = {
     { type: 'over', center: deg(38), half: deg(9), lipLen: 0.01, lipH: 0.0025 },
     { type: 'over', center: deg(142), half: deg(9), lipLen: 0.01, lipH: 0.0025 },
   ],
+  // ポケットの左右では、壁とレールがなめらかに外へ開いてポケットの口につながる（角や段差の切れ端がない）。
+  // 壁沿いに走ってきたコマはそのまま口へ導かれ、口を通り過ぎたコマは反対側の開きで内へ戻される
+  flare: { len: deg(14), out: 0.014 },
   pit: -0.08,
 };
 
@@ -66,7 +66,7 @@ const DT_COARSE = 1 / 4000;
 const DT_FINE_MIN = 1 / 40000;
 const DT_SOFT = 8e-5; // 柔らかい接触を安定に解ける刻み幅
 // コマどうし・壁・天井の接触は「接触剛性＋減衰」の柔らかい接触として力で解く。
-// 剛体の撃力だと刃先の表面速度（秒速20m以上）の分の運動量が一瞬で全部受け渡されてしまうが、
+// 剛体の撃力だと刃先の表面速度（秒速20m以上。壁に対しても ω·R·sinθ で迫る）の分の運動量が一瞬で全部受け渡されてしまうが、
 // 実際は接触面がわずかにたわむあいだ（約0.4ms）に刃先が滑って抜けるので、受け渡しは途中で終わる
 const K_SOFT = 1.5e5; // 接触剛性 [N/m]（金属ブレードとプラスチックの取り付け部のたわみ込み）
 const V_SLIP = 0.05; // 摩擦の向きを決めるときの最小すべり速度 [m/s]
@@ -119,16 +119,8 @@ function wrap(a) {
 }
 
 export function bowlY(r, st = STADIUM) {
-  const rc = Math.min(r, st.R);
-  const r0 = st.bowlR;
-  if (rc <= r0) return st.curve * rc * rc;
-  const y0 = st.curve * r0 * r0;
-  const s0 = 2 * st.curve * r0;
-  const r1 = st.flatR;
-  const k = (s0 - st.outSlope) / (2 * (r1 - r0));
-  if (rc <= r1) return y0 + s0 * (rc - r0) - k * (rc - r0) * (rc - r0);
-  const y1 = y0 + s0 * (r1 - r0) - k * (r1 - r0) * (r1 - r0);
-  return y1 + st.outSlope * (rc - r1);
+  const x = Math.min(r, st.R);
+  return st.curve * x * x;
 }
 
 export function pocketAt(phi, st = STADIUM) {
@@ -136,10 +128,27 @@ export function pocketAt(phi, st = STADIUM) {
   return null;
 }
 
+// ポケットの口への開き具合（口の縁で1、flare.len 離れると0。口の中も1）
+export function pocketFlare(phi, st = STADIUM) {
+  let f = 0;
+  for (const p of st.pockets) {
+    const d = Math.abs(wrap(phi - p.center)) - p.half;
+    const s = d <= 0 ? 1 : Math.max(0, 1 - d / st.flare.len);
+    f = Math.max(f, s * s * (3 - 2 * s)); // 両端で傾きが0になる曲線
+  }
+  return f;
+}
+
+export function wallRadius(phi, st = STADIUM) {
+  return st.R + st.flare.out * pocketFlare(phi, st);
+}
+
 export function railRadius(phi, st = STADIUM) {
   const rl = st.rail;
   const d = wrap(phi - rl.notchAt) / rl.notchWidth;
-  return rl.r - rl.notchDepth * Math.exp(-d * d);
+  // ポケットの口の縁でレールの外側の面が壁に接するところまで外へ曲がる（レールの切れ端が口に突き出さない）
+  const out = st.R + st.flare.out - rl.w / 2 - rl.r;
+  return rl.r - rl.notchDepth * Math.exp(-d * d) + out * pocketFlare(phi, st);
 }
 
 // 床の高さ（ボウル＋ポケットの坂）
@@ -233,7 +242,7 @@ export function buildSpec(blade, ratchet, bit) {
   const parts = [
     layerMass(bladeT.R, blade.metalIn, yb0, yb1, blade.m - blade.hub),
     layerMass(blade.metalIn, 0, yb0, yb1, blade.hub),
-    layerMass(ratT.R, 0.004, yr0, yr1, ratchet.m),
+    layerMass(ratT.R, 0.011, yr0, yr1, ratchet.m), // リングの内側はブレードの軸受けが入る空洞
     layerMass(BIT_R, 0, 0, bit.h, bit.m),
   ];
   let m = 0;
@@ -271,11 +280,12 @@ export function buildSpec(blade, ratchet, bit) {
     IbladeAxis, IcoreAxis, IaxisTotal: IbladeAxis + IcoreAxis,
     layers, rmax: Math.max(bladeT.rmax, ratT.rmax, BIT_R),
     tip: {
-      a: bit.a, rr: bit.rr, mu: (tipMat.mu + MATERIALS.plastic.mu) / 2, e: 0.15,
+      a: bit.a, rr: bit.rr, mu: tipMat.mu, e: 0.15,
       torsion: (3 * Math.PI / 16) * aHertz,
-      flex: bit.tipMat === 'rubber' ? 0.06 : 0.02, // 圧力中心が縁まで移る傾き [rad]（ゴムは変形が大きい）
+      flex: bit.tipMat === 'rubber' ? 0.03 : 0.005, // 圧力中心が縁まで移る傾き [rad]（ゴムは変形が大きい）
     },
-    gear: { y0: bit.h * 0.3, y1: bit.h * 0.6, clutch: bit.clutch },
+    // ギアはビットの中ほど（ラチェット側のフランジのすぐ下）にある
+    gear: { y0: bit.h * 0.45, y1: bit.h * 0.75, clutch: bit.clutch },
     air: airCoef(bladeT, blade.t, spinSign) + airCoef(ratT, ratchet.h, spinSign),
     lockFull: LOCK_FULL * SHAFT[bit.shaft].clamp,
     H: (yb0 + yb1) / 2, // ブレード中心の高さ（軸先から）
@@ -403,21 +413,26 @@ export function launch(world, idx, { x, z, angle, power, bank = 0 }) {
   const rng = world.rng;
   const pw = Math.max(0.05, Math.min(1, power));
   const quality = 0.95 + rng() * 0.06;
-  // 傾けシュート: 進行方向の横を軸に倒す
+  // 傾けシュート（バンク）: 進行方向に対して横へ倒す。平らな軸先は低い側の縁で床をこすり、
+  // その摩擦 −μN·(ω×ê の向き) が進行方向を向く側（回転の向きで決まる）へ倒すと、縁で転がるように走る
   const tilt = 0.01 + bank * 0.14;
-  const hx = Math.cos(angle + Math.PI / 2);
-  const hz = Math.sin(angle + Math.PI / 2);
+  const ux = Math.cos(angle);
+  const uz = Math.sin(angle);
   const s = Math.sin(tilt / 2);
-  b.q = [hx * s, 0, hz * s, Math.cos(tilt / 2)];
+  // 軸の上端を ê = spin·(ŷ × û) へ倒す回転（回転軸は −spin·û）
+  b.q = [-sp.spinSign * ux * s, 0, -sp.spinSign * uz * s, Math.cos(tilt / 2)];
   refresh(b);
   // 軸先の最下点が床から 3mm 上になるように置く
   const tipW = [0, 0, 0];
   b.p = [x, 0, z];
   toWorld(b, 0, 0, 0, tipW);
   b.p[1] += floorY(x, z, world.st) + 0.003 - tipW[1];
-  const speed = (0.2 + 0.9 * pw) * quality;
+  // 打ち出しの横向きの速さは引きの強さで大きく変わり、回転数はあまり変わらない
+  // （実物でも、ひもを引く強さで回転が、打ち出す角度で横の動きが決まる）
+  const speed = (0.1 + 1.4 * pw) * quality;
   b.v = [Math.cos(angle) * speed, -0.05, Math.sin(angle) * speed];
-  const wmag = sp.spinSign * (520 + 430 * pw) * quality;
+  // 回転数: 弱いシュートで約7,000rpm、全力で約10,000rpm（実物のランチャーの範囲）
+  const wmag = sp.spinSign * (740 + 310 * pw) * quality;
   const axis = axisOf(b, [0, 0, 0]);
   // L = I_world ω
   const Iw = inv3(b.Iw);
@@ -516,6 +531,7 @@ export function step(world, dt) {
   const rigid = cs.filter((c) => !c.soft);
   softForces(soft, dt);
   solve(rigid);
+  for (const c of rigid) if (c.patch) patchFriction(c);
   afterSolve(world, cs, dt);
 
   // 積分
@@ -544,6 +560,7 @@ export function step(world, dt) {
     checkState(world, b, dt);
     updateView(b);
   }
+  if (world.onStep) world.onStep(world, cs, dt);
 }
 
 // ---------------- 接触の検出 ----------------
@@ -558,33 +575,124 @@ function addContact(cs, a, b, px, py, pz, nx, ny, nz, pen, e, mu, extra) {
   return c;
 }
 
-// 軸先と床。平らな軸先は「圧力中心」1点で表す: 床に対してまっすぐ立っていれば中心（ねじり摩擦の腕は
-// 一様な圧力の 2/3·a）、傾くほど低い側の縁へ移る。移り切る角度は接触面の弾性変形で決まる（TIP_FLEX）
+// 平らな軸先の面を分けた点（単位円板の中。x, y と面積の重み）
+const PATCH = (() => {
+  const pts = [{ x: 0, y: 0, w: 0.04 }];
+  const rings = [[0.3, 6], [0.6, 10], [0.88, 14]];
+  let tot = 0.04;
+  for (const [r, n] of rings) {
+    for (let i = 0; i < n; i++) {
+      const th = (i / n) * TAU + r;
+      const w = (r * 0.3) / n * 2 * Math.PI;
+      pts.push({ x: Math.cos(th) * r, y: Math.sin(th) * r, w });
+      tot += w;
+    }
+  }
+  for (const p of pts) p.w /= tot;
+  return pts;
+})();
+
+// 軸先と床。
+// - 点の軸先（ボール・ニードル）は1点の接触で、転がりは撃力の摩擦、回転摩擦はヘルツ接触の接触円から。
+// - 平らな軸先は面全体がすべりながら床をこする。床に対する傾きに応じて面の圧力が低い側へ偏り
+//   （偏りきる角度は接触面の弾性変形 TIP_FLEX で決まる）、各点のすべり摩擦を圧力で重み付けして足し合わせる。
+//   圧力が偏ると摩擦の合力が横向きに残り、これがコマを走らせる。ねじり摩擦もこの和から出る
 function tipContacts(world, b, cs) {
   const tip = b.spec.tip;
   const ctr = toWorld(b, 0, tip.rr, 0, tmpA); // 円板の中心
   const n = floorNormal(ctr[0], ctr[2], tmpN, world.st);
   const nx = n[0], ny = n[1], nz = n[2];
-  let bx = ctr[0], by = ctr[1], bz = ctr[2];
-  let torsion = tip.torsion;
-  if (tip.a > 0) {
-    // 床の法線を円板の面に投影した向きの逆が、いちばん低い縁の方向
-    const ax = b.R[1], ay = b.R[4], az = b.R[7];
-    const dn = nx * ax + ny * ay + nz * az;
-    let lx = -(nx - dn * ax), ly = -(ny - dn * ay), lz = -(nz - dn * az);
-    const sinT = Math.hypot(lx, ly, lz);
-    const f = Math.min(1, Math.asin(Math.min(1, sinT)) / tip.flex);
-    if (sinT > 1e-9) {
-      lx /= sinT; ly /= sinT; lz /= sinT;
-      bx += lx * tip.a * f; by += ly * tip.a * f; bz += lz * tip.a * f;
-    }
-    torsion = (2 / 3) * tip.a * (1 - f) + tip.torsion;
+  if (tip.a <= 0) {
+    const px = ctr[0] - tip.rr * nx;
+    const py = ctr[1] - tip.rr * ny;
+    const pz = ctr[2] - tip.rr * nz;
+    const pen = (floorY(px, pz, world.st) - py) * ny;
+    if (pen > -SLOP) addContact(cs, b, null, px, py, pz, nx, ny, nz, pen, tip.e, tip.mu, { torsion: tip.torsion, kind: 'tip' });
+    return;
   }
-  const px = bx - tip.rr * nx;
-  const py = by - tip.rr * ny;
-  const pz = bz - tip.rr * nz;
+  // 床の法線を円板の面に投影した向きの逆が、いちばん低い縁の方向 ê
+  const ax = b.R[1], ay = b.R[4], az = b.R[7];
+  const dn = nx * ax + ny * ay + nz * az;
+  let ex = -(nx - dn * ax), ey = -(ny - dn * ay), ez = -(nz - dn * az);
+  const sinT = Math.hypot(ex, ey, ez);
+  if (sinT > 1e-9) {
+    ex /= sinT; ey /= sinT; ez /= sinT;
+  } else {
+    ex = b.R[0]; ey = b.R[3]; ez = b.R[6];
+  }
+  // ê2 = 軸 × ê
+  const fx = ay * ez - az * ey, fy = az * ex - ax * ez, fz = ax * ey - ay * ex;
+  // 圧力は ê 方向に線形に偏る p ∝ 1 + β x（負になった側は浮く）
+  const s = Math.asin(Math.min(1, sinT)) / tip.flex;
+  const beta = 4 * Math.min(s, 6);
+  const a = tip.a;
+  const samples = [];
+  let wsum = 0;
+  let dx = 0;
+  for (const q of PATCH) {
+    const w = q.w * Math.max(0, 1 + beta * q.x);
+    if (w <= 0) continue;
+    wsum += w;
+    dx += w * q.x;
+    samples.push({ q, w });
+  }
+  dx /= wsum;
+  // 圧力中心に法線の接触を置く（摩擦はあとで面全体から）
+  const cx = ctr[0] + ex * a * dx, cy = ctr[1] + ey * a * dx, cz = ctr[2] + ez * a * dx;
+  const px = cx - tip.rr * nx;
+  const py = cy - tip.rr * ny;
+  const pz = cz - tip.rr * nz;
   const pen = (floorY(px, pz, world.st) - py) * ny;
-  if (pen > -SLOP) addContact(cs, b, null, px, py, pz, nx, ny, nz, pen, tip.e, tip.mu, { torsion, kind: 'tip' });
+  if (pen <= -SLOP) return;
+  const pts = samples.map(({ q, w }) => [
+    ctr[0] + (ex * q.x + fx * q.y) * a - tip.rr * nx,
+    ctr[1] + (ey * q.x + fy * q.y) * a - tip.rr * ny,
+    ctr[2] + (ez * q.x + fz * q.y) * a - tip.rr * nz,
+    w / wsum,
+  ]);
+  addContact(cs, b, null, px, py, pz, nx, ny, nz, pen, tip.e, 0, { kind: 'tip', patch: pts, patchMu: tip.mu });
+}
+
+const V_EPS = 0.01; // すべり摩擦の向きを決める最小すべり速度 [m/s]
+// 平らな軸先の面のすべり摩擦（法線の撃力 jn が決まってから）
+function patchFriction(c) {
+  const b = c.a;
+  if (!c.patch || c.jn <= 0) return;
+  const w = b.w;
+  let Jx = 0, Jy = 0, Jz = 0, Lx = 0, Ly = 0, Lz = 0;
+  for (const p of c.patch) {
+    const rx = p[0] - b.p[0], ry = p[1] - b.p[1], rz = p[2] - b.p[2];
+    let ux = b.v[0] + w[1] * rz - w[2] * ry;
+    let uy = b.v[1] + w[2] * rx - w[0] * rz;
+    let uz = b.v[2] + w[0] * ry - w[1] * rx;
+    const un = ux * c.nx + uy * c.ny + uz * c.nz;
+    ux -= un * c.nx; uy -= un * c.ny; uz -= un * c.nz;
+    const um = Math.hypot(ux, uy, uz);
+    if (um < 1e-12) continue;
+    const k = (-c.patchMu * c.jn * p[3] * Math.min(1, um / V_EPS)) / um;
+    const jx = ux * k, jy = uy * k, jz = uz * k;
+    Jx += jx; Jy += jy; Jz += jz;
+    Lx += ry * jz - rz * jy;
+    Ly += rz * jx - rx * jz;
+    Lz += rx * jy - ry * jx;
+  }
+  // 1歩で並進の速度を逆転させない（止まりかけのときの数値振動を防ぐ）。進行方向と逆向きの成分だけを頭打ちにする
+  const vt = Math.hypot(b.v[0], b.v[1], b.v[2]);
+  if (vt > 1e-9) {
+    const vx = b.v[0] / vt, vy = b.v[1] / vt, vz = b.v[2] / vt;
+    const back = -(Jx * vx + Jy * vy + Jz * vz);
+    const lim = b.spec.m * vt;
+    if (back > lim) {
+      const d = back - lim;
+      Jx += vx * d; Jy += vy * d; Jz += vz * d;
+    }
+  }
+  b.v[0] += Jx / b.spec.m;
+  b.v[1] += Jy / b.spec.m;
+  b.v[2] += Jz / b.spec.m;
+  b.L[0] += Lx; b.L[1] += Ly; b.L[2] += Lz;
+  syncW(b);
+  c.jtx = Jx; c.jty = Jy; c.jtz = Jz;
 }
 
 // 下面の縁が床をこする（倒れかけ・倒れたとき）
@@ -597,11 +705,11 @@ function rimFloorContacts(world, b, cs) {
     const fy = floorY(c[0], c[2], world.st);
     // ざっくりした下限: 縁は中心より rmax·sin(傾き) 低く、床は斜面のぶん高い可能性がある
     if (c[1] - L.table.rmax * (sinTilt + 0.6) > fy + 0.002) continue;
+    // 床とは包絡線（最大半径の円）の下面の縁で当たる
     let best = null;
+    const r = L.table.rmax;
     for (let i = 0; i < 16; i++) {
-      const k = Math.round((i / 16) * NPOLAR) % NPOLAR;
-      const phi = k * DPHI;
-      const r = L.table.R[k];
+      const phi = (i / 16) * TAU;
       const p = toWorld(b, Math.cos(phi) * r, L.y0, Math.sin(phi) * r, [0, 0, 0]);
       const pen = floorY(p[0], p[2], world.st) - p[1];
       if (!best || pen > best.pen) best = { p, pen };
@@ -609,7 +717,7 @@ function rimFloorContacts(world, b, cs) {
     if (best && best.pen > -SLOP) {
       const n = floorNormal(best.p[0], best.p[2], [0, 0, 0], world.st);
       addContact(cs, b, null, best.p[0], best.p[1], best.p[2], n[0], n[1], n[2], best.pen * n[1], 0.2,
-        (L.mat.mu + MATERIALS.plastic.mu) / 2, { kind: 'scrape', partA: L.part });
+        L.mat.mu, { kind: 'scrape', partA: L.part });
       b.scraping = true;
     }
   }
@@ -632,39 +740,80 @@ function extremePoint(table, phiU, win) {
   return bk;
 }
 
+// 壁: 半径 wallRadius(φ) の壁（ポケットの左右でなめらかに外へ開く）から、ポケットの口（床から pocketTop の高さまで）を
+// 切り抜いた形。回転している輪郭の包絡線（最大半径の円）と当たる。刃先が壁の前を通り過ぎる周期（約3ms）と
+// 壁がたわんで応答する時間が同じくらいなので、壁から見ると刃の凹凸はならされる。
+// コマの軸からいちばん近い壁の点（壁の曲線の上か、口の縁）までの距離で判定する
+const WALL_SAMPLES = 24;
+function nearestWall(st, ax, az, rr, skipPockets) {
+  const ar = Math.hypot(ax, az) || 1e-9;
+  const phi0 = Math.atan2(az, ax);
+  const W = (rr + 0.03) / st.R;
+  let best = null;
+  const test = (phi) => {
+    if (skipPockets && pocketAt(phi, st)) return;
+    const R = wallRadius(phi, st);
+    const wx = Math.cos(phi) * R;
+    const wz = Math.sin(phi) * R;
+    const d = Math.hypot(ax - wx, az - wz);
+    if (!best || d < best.d) best = { d, wx, wz, phi };
+  };
+  for (let i = 0; i <= WALL_SAMPLES; i++) test(phi0 - W + (2 * W * i) / WALL_SAMPLES);
+  if (skipPockets) {
+    // 口の縁（切り抜きの端）
+    for (const p of st.pockets) {
+      for (const e of [p.center - p.half - 1e-6, p.center + p.half + 1e-6]) if (Math.abs(wrap(e - phi0)) < W) test(e);
+    }
+  }
+  if (!best) return null;
+  // 近いところを細かく
+  let h = W / WALL_SAMPLES;
+  for (let k = 0; k < 6; k++) {
+    const c = best.phi;
+    test(c - h);
+    test(c + h);
+    h *= 0.5;
+  }
+  // 壁の外側にいる（口の中）ときは向きが逆になるので、壁の曲線の内向きの法線と比べて向きをそろえる
+  let nx = (ax - best.wx) / (best.d || 1e-9);
+  let nz = (az - best.wz) / (best.d || 1e-9);
+  let dist = best.d;
+  if (ar > wallRadius(phi0, st) && !(skipPockets && pocketAt(phi0, st))) {
+    nx = -nx; nz = -nz; dist = -dist;
+  }
+  return { dist, wx: best.wx, wz: best.wz, nx, nz };
+}
+
 function wallContacts(world, b, cs) {
   const st = world.st;
   const sp = b.spec;
   const r = Math.hypot(b.p[0], b.p[2]);
-  if (r + sp.rmax < st.R - 0.002 || r < 1e-6) return;
-  const ux = b.p[0] / r;
-  const uz = b.p[2] / r;
-  // 外向き方向をパーツ座標へ
-  const R = b.R;
-  const lx = R[0] * ux + R[6] * uz;
-  const lz = R[2] * ux + R[8] * uz;
-  const phiU = Math.atan2(lz, lx);
+  if (r + sp.rmax < st.R - 0.002) return;
   const openTop = bowlY(st.R, st) + st.pocketTop;
+  const lintelR = st.R + st.flare.out;
   for (const L of sp.layers) {
-    const k = extremePoint(L.table, phiU, 0.6);
-    const phi = k * DPHI;
-    const rr = L.table.R[k];
-    const cx = Math.cos(phi) * rr;
-    const cz = Math.sin(phi) * rr;
+    const rr = L.table.rmax;
     let best = null;
     for (const y of [L.y0, L.y1]) {
-      const p = toWorld(b, cx, y, cz, [0, 0, 0]);
-      const pr = Math.hypot(p[0], p[2]);
-      const pen = pr - st.R;
-      // ポケットの開口（床から pocketTop まで）以外はカバーの高さまで壁
-      const open = p[1] < openTop && pocketAt(Math.atan2(p[2], p[0]), st);
-      if (pen > -SLOP && pen < 0.01 && !open && (!best || pen > best.pen)) best = { p, pen, pr };
+      const a = toWorld(b, 0, y, 0, [0, 0, 0]);
+      const ar = Math.hypot(a[0], a[2]) || 1e-9;
+      const below = a[1] < openTop;
+      const w = nearestWall(st, a[0], a[2], rr, below);
+      if (!w) continue;
+      let c = { pen: rr - w.dist, wx: w.wx, wy: a[1], wz: w.wz, nx: w.nx, ny: 0, nz: w.nz };
+      if (!below && pocketAt(Math.atan2(a[2], a[0]), st)) {
+        // 口の上の縁より高い: はみ出した部分が上の縁の下面に当たる。内へ押し戻すのと下へ押し下げるのの浅い方
+        const pr = rr - (lintelR - ar);
+        const pv = a[1] - openTop;
+        if (pv < pr && pv < c.pen) {
+          c = { pen: pv, wx: (a[0] / ar) * Math.max(lintelR, ar), wy: openTop, wz: (a[2] / ar) * Math.max(lintelR, ar), nx: 0, ny: -1, nz: 0 };
+        }
+      }
+      if (c.pen > -SLOP && (!best || c.pen > best.pen)) best = c;
     }
     if (best) {
-      const nx = -best.p[0] / best.pr;
-      const nz = -best.p[2] / best.pr;
-      addContact(cs, b, null, best.p[0], best.p[1], best.p[2], nx, 0, nz, best.pen,
-        (L.mat.e + MATERIALS.plastic.e) / 2, (L.mat.mu + MATERIALS.plastic.mu) / 2, { kind: 'wall', partA: L.part, soft: true });
+      addContact(cs, b, null, best.wx, best.wy, best.wz, best.nx, best.ny, best.nz, best.pen,
+        (L.mat.e + MATERIALS.wall.e) / 2, MATERIALS.wall.mu, { kind: 'wall', partA: L.part, soft: true });
     }
   }
 }
@@ -676,33 +825,67 @@ function ceilingContacts(world, b, cs) {
   const c = toWorld(b, 0, L.y1, 0, tmpA);
   if (c[1] + L.table.rmax < st.ceiling - 0.002) return;
   let best = null;
+  const r = L.table.rmax; // 包絡線
   for (let i = 0; i < 16; i++) {
-    const k = Math.round((i / 16) * NPOLAR) % NPOLAR;
-    const phi = k * DPHI;
-    const r = L.table.R[k];
+    const phi = (i / 16) * TAU;
     const p = toWorld(b, Math.cos(phi) * r, L.y1, Math.sin(phi) * r, [0, 0, 0]);
     if (!best || p[1] > best[1]) best = p;
   }
   const pen = best[1] - st.ceiling;
-  if (pen > -SLOP) addContact(cs, b, null, best[0], best[1], best[2], 0, -1, 0, pen, 0.4, 0.26, { kind: 'ceiling', soft: true });
+  if (pen > -SLOP) addContact(cs, b, null, best[0], best[1], best[2], 0, -1, 0, pen, MATERIALS.wall.e, MATERIALS.wall.mu, { kind: 'ceiling', soft: true });
 }
 
-// ギアとレールの段差。歯の噛み合いを高い摩擦で表し、半クラッチのトルクで頭打ちにする
+// レールは床から高さ h まで立ち上がる固い段差。ビットのギアは歯で噛み合い、軸先とビットの下部はただ当たる
 function railContacts(world, b, cs, dt) {
   const st = world.st;
   const sp = b.spec;
   const g = toWorld(b, 0, (sp.gear.y0 + sp.gear.y1) / 2, 0, tmpA);
+  if (Math.hypot(g[0], g[2]) < st.rail.r - st.rail.notchDepth - 0.02) return;
+  // ギア: 歯車の噛み合い（ラックとピニオン）。歯が届いていれば押し付けの強さに関係なく力を伝え、
+  // 上限は半クラッチのトルクだけ。歯は縦の溝なので、力はレールに沿った水平方向だけに働く
+  railRing(world, b, cs, (sp.gear.y0 + sp.gear.y1) / 2, sp.gear.y0, GEAR_R, (c) => {
+    c.kind = 'rail';
+    c.mu = Infinity;
+    c.tcap = (sp.gear.clutch * dt) / GEAR_R;
+    c.tdir = [-c.nz, 0, c.nx];
+  });
+  // 軸先と、ビットの細い下部（ギアより下）
+  const tipR = sp.tip.a + sp.tip.rr;
+  railRing(world, b, cs, sp.tip.rr, 0, tipR, (c) => { c.kind = 'railside'; });
+  railRing(world, b, cs, sp.gear.y0 * 0.6, sp.gear.y0 * 0.3, (tipR + BIT_R) / 2, (c) => { c.kind = 'railside'; });
+}
+
+// 軸上の高さ yc（下端 ylow）にある半径 rad の輪とレールの段差の接触
+function railRing(world, b, cs, yc, ylow, rad, setup) {
+  const st = world.st;
+  const g = toWorld(b, 0, yc, 0, [0, 0, 0]);
   const r = Math.hypot(g[0], g[2]);
-  if (r < st.rail.r - st.rail.notchDepth - 0.02) return;
   const phi = Math.atan2(g[2], g[0]);
+  // 輪の下端がレールの上端より低いときだけ当たる
+  const lo = toWorld(b, 0, ylow, 0, tmpB);
+  const lowY = lo[1] - rad * Math.hypot(b.R[1], b.R[7]);
+  // ポケットの前ではレールが途切れている（壁沿いからそのまま入れる）。途切れた端には当たる
+  const pk = pocketAt(phi, st);
+  if (pk) {
+    const e = wrap(phi - pk.center) > 0 ? pk.center + pk.half : pk.center - pk.half;
+    const er = railRadius(e, st);
+    const ex = Math.cos(e) * er;
+    const ez = Math.sin(e) * er;
+    const dx = g[0] - ex;
+    const dz = g[2] - ez;
+    const dist = Math.hypot(dx, dz) || 1e-9;
+    const reachE = rad + st.rail.w * 0.6;
+    if (dist > reachE || lowY > bowlY(er, st) + st.rail.h) return;
+    const c = addContact(cs, b, null, ex, g[1], ez, dx / dist, 0, dz / dist, reachE - dist, 0.2, b.spec.tip.mu, {});
+    c.kind = 'railside';
+    return;
+  }
   const rho = railRadius(phi, st);
   const d = r - rho;
   const face = st.rail.w * 0.6;
-  const reach = GEAR_R + face;
+  const reach = rad + face;
   if (Math.abs(d) > reach) return;
-  // ギアの下端がレールの上端より低いときだけ当たる
-  const gb = toWorld(b, 0, sp.gear.y0, 0, tmpB);
-  if (gb[1] > bowlY(rho, st) + st.rail.h) return;
+  if (lowY > bowlY(rho, st) + st.rail.h) return;
   // レールの中心線までの距離の勾配（射出ポイントでは内側に曲がっている）
   const e = 0.0005;
   const dd = (x, z) => Math.hypot(x, z) - railRadius(Math.atan2(z, x), st);
@@ -715,10 +898,8 @@ function railContacts(world, b, cs, dt) {
   const nx = gx * side;
   const nz = gz * side;
   const pen = reach - Math.abs(d);
-  // 歯は縦の溝なので、摩擦（噛み合い）はレールに沿った水平方向だけに働く
-  addContact(cs, b, null, g[0] - nx * GEAR_R, g[1], g[2] - nz * GEAR_R, nx, 0, nz, pen, 0, 1.0, {
-    kind: 'rail', tcap: (sp.gear.clutch * dt) / GEAR_R, tdir: [-nz, 0, nx],
-  });
+  const c = addContact(cs, b, null, g[0] - nx * rad, g[1], g[2] - nz * rad, nx, 0, nz, pen, 0.2, b.spec.tip.mu, {});
+  setup(c);
 }
 
 // X の輪郭の点が Y の輪郭に入り込んでいるか（X → Y の片方向）
@@ -810,11 +991,13 @@ function softForces(cs, dt) {
     const vin = Math.max(E_YIELD_V, -(vr0(c) || 0));
     const le = Math.log(Math.max(0.05, c.e * Math.pow(E_YIELD_V / vin, 0.25)));
     const zeta = -le / Math.sqrt(Math.PI * Math.PI + le * le);
-    const damp = 2 * zeta * Math.sqrt(K_SOFT * mEff);
+    const K = c.k || K_SOFT;
+    const damp = 2 * zeta * Math.sqrt(K * mEff);
     relVel(c, vr);
     const vn = vr[0] * c.nx + vr[1] * c.ny + vr[2] * c.nz;
     c.vn0 = vn;
-    const Fn = Math.max(0, K_SOFT * c.pen - damp * vn);
+    // 数値的に深く入り込んだときに力が際限なく大きくならないよう、ばねの伸びは 6mm で頭打ち
+    const Fn = Math.max(0, K * Math.min(c.pen, 0.006) - damp * vn);
     if (Fn <= 0) continue;
     const jn = Fn * dt;
     // 摩擦: すべりと逆向きに μ Fn。ただし1歩ですべりを逆転させない
@@ -945,7 +1128,7 @@ function solve(cs) {
         let nx = c.jtx + ux * d;
         let ny = c.jty + uy * d;
         let nz = c.jtz + uz * d;
-        const lim = Math.min(c.mu * c.jn, c.tcap);
+        const lim = c.mu === Infinity ? c.tcap : Math.min(c.mu * c.jn, c.tcap);
         const m = Math.hypot(nx, ny, nz);
         if (m > lim) {
           const s = lim / m;
@@ -1078,8 +1261,8 @@ function checkState(world, b, dt) {
     const ax = axisOf(b, tmpB);
     const spin = Math.abs(b.w[0] * ax[0] + b.w[1] * ax[1] + b.w[2] * ax[2]);
     b.scrapeT = b.scraping ? b.scrapeT + dt : Math.max(0, b.scrapeT - dt * 2);
-    // 倒れた（下面の縁が床をこすり続けた）か、回転がほぼ止まった
-    if (b.scrapeT > 0.25 || spin < 15 || ax[1] < 0.5) {
+    // 倒れた（ブレードやラチェットの下面の縁が床をこすり続けた）か、回転がほぼ止まった
+    if (b.scrapeT > 0.3 || spin < 15) {
       b.state = 'down';
       b.finish = 'spin';
       emit(world, { type: 'down', idx: b.idx });
@@ -1136,7 +1319,10 @@ export function soloRunner(spec) {
   const key = `${spec.blade.id}|${spec.ratchet.id}|${spec.bit.id}`;
   if (soloCache.has(key)) return { done: true, time: soloCache.get(key), run: () => true };
   const w = createBattle([spec], { seed: 7 });
-  launch(w, 0, { x: -0.1, z: 0, angle: 0, power: 0.9 });
+  // 平らな軸先は外周へ斜めに強く（レールに乗せる）、点の軸先は中央へそっと置く
+  // （右回転は反時計回り、左回転は時計回りがレールを走る向き）
+  if (spec.bit.a > 0.0012) launch(w, 0, { x: -0.1, z: 0.03, angle: Math.atan2(-0.03, 0.1) - spec.spinSign * 1.2, power: 0.95, bank: 1 });
+  else launch(w, 0, { x: -0.1, z: 0, angle: 0, power: 0.2 });
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const runner = {
     done: false,

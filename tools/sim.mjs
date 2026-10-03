@@ -24,23 +24,35 @@ function runMatch(sa, sb, seed) {
   const rng = w.rng;
   const swap = seed % 2 === 1;
   const side = (i) => ((i === 0) !== swap ? -1 : 1);
+  // COM と同じ打ち方: 平らな軸先は外周へ斜めに強く、点の軸先は中央へ弱めに
   for (const i of [0, 1]) {
+    const sp = i === 0 ? sa : sb;
     const x = side(i) * (0.08 + rng() * 0.05);
     const z = (rng() - 0.5) * 0.08;
-    launch(w, i, { x, z, angle: Math.atan2(-z, -x) + (rng() - 0.5) * 1.4, power: 0.75 + rng() * 0.25, bank: rng() < 0.3 ? 1 : 0 });
+    const toC = Math.atan2(-z, -x);
+    if (sp.bit.a > 0.0012) {
+      // 右回転は反時計回りにレールを走るので、その向きへ打ち出す（左回転は逆）
+      const sd = -sp.spinSign;
+      launch(w, i, { x, z, angle: toC + sd * (1.0 + rng() * 0.4) + (rng() - 0.5) * 0.4, power: 0.9 + rng() * 0.1, bank: 1 });
+    } else {
+      launch(w, i, { x, z, angle: toC + (rng() - 0.5) * 0.4, power: 0.15 + rng() * 0.15, bank: 0 });
+    }
   }
   let res = null;
   let hits = 0;
   let dashes = 0;
+  let lastHit = -9;
   while (w.t < 240 && !res) {
     advance(w, 0.02);
     for (const e of w.events) {
-      if (e.type === 'hit') hits++;
+      if (e.type === 'hit') { hits++; lastHit = w.t; }
     }
     for (const b of w.beys) if (b.onRail) dashes++;
     w.events.length = 0;
     res = judge(w);
   }
+  // 場外が当たりから0.6秒以内なら弾き出し、それ以外は自滅
+  if (res && (res.type === 'over' || res.type === 'xtreme') && w.t - lastHit > 0.6) res = { ...res, type: res.type + '(self)' };
   return { res, t: w.t, hits };
 }
 

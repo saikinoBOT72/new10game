@@ -31,8 +31,9 @@ export function bladeRadius(shape, R, phi, spinSign) {
 }
 
 // ラチェットの輪郭: 円筒に n 個の突起
-export const RATCHET_BASE_R = 0.0112;
-export const RATCHET_BUMP = 0.0019;
+// 実物のラチェットのリングは直径35〜37mmほどで、ブレードの内側近くまで張り出している
+export const RATCHET_BASE_R = 0.0158;
+export const RATCHET_BUMP = 0.0026;
 export function ratchetRadius(ratchet, phi) {
   const n = ratchet.n;
   const w = Math.min(0.34, (Math.PI / n) * 0.75); // 突起の半幅
